@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentFax Dashboard</title>
+<style>
+/* ── Reset & Base ────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;
+  background:#0d1117;color:#e6edf3;line-height:1.5;min-height:100vh}
+a{color:#58a6ff;text-decoration:none}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#161b22}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px}
+
+/* ── Header ──────────────────────────────────── */
+header{background:#161b22;border-bottom:1px solid #30363d;padding:12px 24px;
+  display:flex;align-items:center;justify-content:space-between}
+.logo{font-size:18px;font-weight:700;display:flex;align-items:center;gap:8px}
+.logo span{color:#58a6ff}
+.agent-info{font-size:12px;color:#8b949e}
+.agent-info .wallet{font-family:monospace;color:#58a6ff}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:#3fb950;margin-right:4px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ── Tabs ────────────────────────────────────── */
+nav{display:flex;background:#161b22;border-bottom:1px solid #30363d;padding:0 24px;gap:0}
+nav button{background:none;border:none;color:#8b949e;padding:10px 16px;
+  font-size:13px;cursor:pointer;border-bottom:2px solid transparent;
+  transition:all .15s}
+nav button:hover{color:#e6edf3}
+nav button.active{color:#58a6ff;border-bottom-color:#58a6ff}
+
+/* ── Main Content ────────────────────────────── */
+main{padding:20px 24px;max-width:1400px;margin:0 auto}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* ── Cards ───────────────────────────────────── */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
+.card .value{font-size:28px;font-weight:700;margin:4px 0}
+.card .label{font-size:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+.card .sub{font-size:11px;color:#8b949e;margin-top:4px}
+.card.blue .value{color:#58a6ff}
+.card.green .value{color:#3fb950}
+.card.yellow .value{color:#d29922}
+.card.purple .value{color:#bc8cff}
+
+/* ── Activity Feed ───────────────────────────── */
+.activity{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
+.activity h3{font-size:14px;color:#8b949e;margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px}
+.event{display:flex;align-items:flex-start;gap:10px;padding:6px 0;
+  border-bottom:1px solid #21262d;font-size:13px}
+.event:last-child{border-bottom:none}
+.event .time{color:#8b949e;font-family:monospace;font-size:11px;white-space:nowrap;min-width:70px}
+.event .icon{font-size:14px;min-width:18px;text-align:center}
+.event .detail{flex:1}
+.event.msg_in .icon{color:#3fb950}
+.event.msg_out .icon{color:#58a6ff}
+.event.task .icon{color:#d29922}
+
+/* ── Messages Table ──────────────────────────── */
+.filters{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.filters select,.filters input{background:#0d1117;border:1px solid #30363d;
+  color:#e6edf3;padding:6px 10px;border-radius:6px;font-size:12px}
+.filters select{cursor:pointer}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead th{text-align:left;padding:8px 10px;color:#8b949e;font-weight:600;
+  border-bottom:1px solid #30363d;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+tbody tr{border-bottom:1px solid #21262d;cursor:pointer;transition:background .1s}
+tbody tr:hover{background:#161b22}
+td{padding:8px 10px;vertical-align:top}
+.dir-in{color:#3fb950;font-weight:700}
+.dir-out{color:#58a6ff;font-weight:700}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.badge-new{background:#1f3a2c;color:#3fb950}
+.badge-processed{background:#1a2332;color:#58a6ff}
+.badge-processing{background:#2d2a1a;color:#d29922}
+.badge-failed{background:#3d1a1a;color:#f85149}
+.badge-sent{background:#1a2332;color:#58a6ff}
+.badge-acked{background:#1f3a2c;color:#3fb950}
+.payload-row{display:none;background:#0d1117}
+.payload-row td{padding:8px 10px 8px 40px}
+.payload-row pre{font-size:11px;color:#8b949e;white-space:pre-wrap;word-break:break-all;max-height:200px;overflow-y:auto}
+.payload-row.open{display:table-row}
+
+/* ── Kanban ──────────────────────────────────── */
+.kanban{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;min-height:300px}
+.kanban-col{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;min-height:200px}
+.kanban-col h3{font-size:12px;text-transform:uppercase;letter-spacing:.5px;
+  margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid;display:flex;
+  align-items:center;justify-content:space-between}
+.kanban-col h3 .count{background:#30363d;padding:1px 8px;border-radius:10px;font-size:11px}
+.col-pending h3{color:#8b949e;border-color:#8b949e}
+.col-progress h3{color:#d29922;border-color:#d29922}
+.col-completed h3{color:#3fb950;border-color:#3fb950}
+.col-failed h3{color:#f85149;border-color:#f85149}
+.task-card{background:#0d1117;border:1px solid #30363d;border-radius:6px;
+  padding:10px;margin-bottom:8px;font-size:12px}
+.task-card .skill{font-weight:700;font-size:13px;margin-bottom:4px}
+.task-card .meta{color:#8b949e;font-size:11px}
+.task-card .duration{color:#d29922;font-weight:600}
+
+/* ── Network Graph ───────────────────────────── */
+.network-container{display:flex;gap:20px}
+.network-svg{flex:1;background:#161b22;border:1px solid #30363d;border-radius:8px;min-height:400px}
+.peer-detail{width:280px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
+.peer-detail h3{font-size:14px;margin-bottom:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+.peer-item{padding:10px;border-bottom:1px solid #21262d;font-size:13px}
+.peer-item:last-child{border-bottom:none}
+.peer-item .name{font-weight:700;display:flex;align-items:center;gap:6px}
+.peer-item .wallet-addr{font-family:monospace;font-size:11px;color:#8b949e;margin-top:2px}
+.peer-item .skills-list{margin-top:4px;display:flex;flex-wrap:wrap;gap:4px}
+.skill-tag{background:#1a2332;color:#58a6ff;padding:1px 6px;border-radius:4px;font-size:10px}
+.online-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.online-dot.on{background:#3fb950}
+.online-dot.off{background:#484f58}
+
+/* ── Stats Bars ──────────────────────────────── */
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.stats-section{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
+.stats-section h3{font-size:14px;margin-bottom:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+.bar-chart .bar-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
+.bar-row .bar-label{min-width:100px;text-align:right;color:#8b949e}
+.bar-row .bar-track{flex:1;height:18px;background:#21262d;border-radius:4px;overflow:hidden}
+.bar-row .bar-fill{height:100%;border-radius:4px;transition:width .3s;min-width:2px;
+  display:flex;align-items:center;padding:0 6px;font-size:10px;font-weight:600;color:#fff}
+.bar-row .bar-count{min-width:30px;text-align:right;font-family:monospace;font-size:12px}
+.ratio-bar{height:24px;background:#21262d;border-radius:6px;overflow:hidden;display:flex;margin:8px 0}
+.ratio-bar .segment{height:100%;display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:600;transition:width .3s}
+
+/* ── Empty State ─────────────────────────────── */
+.empty{text-align:center;color:#484f58;padding:40px;font-size:14px}
+.empty .emoji{font-size:32px;margin-bottom:8px}
+
+/* ── Responsive ──────────────────────────────── */
+@media(max-width:900px){
+  .kanban{grid-template-columns:repeat(2,1fr)}
+  .stats-grid{grid-template-columns:1fr}
+  .network-container{flex-direction:column}
+}
+@media(max-width:600px){
+  .kanban{grid-template-columns:1fr}
+  .cards{grid-template-columns:repeat(2,1fr)}
+  header{flex-direction:column;gap:8px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">📠 <span>AgentFax</span> Dashboard</div>
+  <div class="agent-info" id="agent-info">
+    <span class="status-dot"></span>
+    Loading...
+  </div>
+</header>
+
+<nav id="tabs">
+  <button class="active" data-tab="overview">Overview</button>
+  <button data-tab="messages">Messages</button>
+  <button data-tab="tasks">Tasks</button>
+  <button data-tab="network">Network</button>
+  <button data-tab="stats">Stats</button>
+</nav>
+
+<main>
+  <!-- ═══ Overview Tab ═══ -->
+  <div class="tab-content active" id="tab-overview">
+    <div class="cards" id="overview-cards"></div>
+    <div class="activity">
+      <h3>Recent Activity</h3>
+      <div id="activity-feed"></div>
+    </div>
+  </div>
+
+  <!-- ═══ Messages Tab ═══ -->
+  <div class="tab-content" id="tab-messages">
+    <div class="filters">
+      <select id="filter-type"><option value="">All Types</option></select>
+      <input id="filter-sender" placeholder="Filter sender..." type="text">
+      <select id="filter-status">
+        <option value="">All Status</option>
+        <option value="new">New</option>
+        <option value="processing">Processing</option>
+        <option value="processed">Processed</option>
+        <option value="failed">Failed</option>
+        <option value="sent">Sent</option>
+        <option value="acked">Acked</option>
+      </select>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Dir</th><th>Type</th><th>Sender / Recipient</th><th>Status</th></tr>
+      </thead>
+      <tbody id="messages-body"></tbody>
+    </table>
+  </div>
+
+  <!-- ═══ Tasks Tab ═══ -->
+  <div class="tab-content" id="tab-tasks">
+    <div class="kanban" id="kanban">
+      <div class="kanban-col col-pending">
+        <h3>Pending <span class="count" id="k-pending-count">0</span></h3>
+        <div id="k-pending"></div>
+      </div>
+      <div class="kanban-col col-progress">
+        <h3>In Progress <span class="count" id="k-progress-count">0</span></h3>
+        <div id="k-progress"></div>
+      </div>
+      <div class="kanban-col col-completed">
+        <h3>Completed <span class="count" id="k-completed-count">0</span></h3>
+        <div id="k-completed"></div>
+      </div>
+      <div class="kanban-col col-failed">
+        <h3>Failed <span class="count" id="k-failed-count">0</span></h3>
+        <div id="k-failed"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Network Tab ═══ -->
+  <div class="tab-content" id="tab-network">
+    <div class="network-container">
+      <svg class="network-svg" id="network-svg" viewBox="0 0 600 400"></svg>
+      <div class="peer-detail">
+        <h3>Known Peers</h3>
+        <div id="peer-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Stats Tab ═══ -->
+  <div class="tab-content" id="tab-stats">
+    <div class="stats-grid">
+      <div class="stats-section">
+        <h3>Message Types</h3>
+        <div class="bar-chart" id="msg-type-bars"></div>
+      </div>
+      <div class="stats-section">
+        <h3>Task Results</h3>
+        <div id="task-ratio"></div>
+        <div class="bar-chart" id="task-bars" style="margin-top:16px"></div>
+      </div>
+      <div class="stats-section">
+        <h3>Message Flow</h3>
+        <div id="flow-stats"></div>
+      </div>
+      <div class="stats-section">
+        <h3>Peer Latency</h3>
+        <div class="bar-chart" id="latency-bars"></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ── State ──────────────────────────────────────
+let activeTab = 'overview';
+let cachedStats = null;
+let cachedMessages = null;
+let cachedTasks = null;
+let cachedPeers = null;
+let cachedActivity = null;
+let knownMsgTypes = new Set();
+let refreshTimer = null;
+
+// ── Helpers ────────────────────────────────────
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+function fmtTime(iso) {
+  if (!iso) return '-';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  } catch { return iso.slice(11,19) || '-'; }
+}
+
+function fmtDate(iso) {
+  if (!iso) return '-';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-GB',{month:'short',day:'numeric'}) + ' ' + fmtTime(iso);
+  } catch { return iso; }
+}
+
+function fmtWallet(w) {
+  if (!w) return '-';
+  return w.length > 12 ? w.slice(0,6)+'…'+w.slice(-4) : w;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function badge(status) {
+  const cls = {
+    new:'badge-new',processed:'badge-processed',processing:'badge-processing',
+    failed:'badge-failed',sent:'badge-sent',acked:'badge-acked'
+  }[status] || 'badge-sent';
+  return `<span class="badge ${cls}">${escHtml(status||'?')}</span>`;
+}
+
+// ── API ────────────────────────────────────────
+async function api(path) {
+  try {
+    const r = await fetch(path);
+    return await r.json();
+  } catch(e) {
+    console.error('API error:', path, e);
+    return null;
+  }
+}
+
+// ── Tab Switching ──────────────────────────────
+document.getElementById('tabs').addEventListener('click', (e) => {
+  if (e.target.tagName !== 'BUTTON') return;
+  $$('nav button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  activeTab = e.target.dataset.tab;
+  $$('.tab-content').forEach(t => t.classList.remove('active'));
+  $(`#tab-${activeTab}`).classList.add('active');
+  refresh();
+});
+
+// ── Rendering: Overview ────────────────────────
+function renderOverview(stats, activity) {
+  if (!stats) return;
+  const inbox = stats.inbox || {};
+  const outbox = stats.outbox || {};
+  const tasks = stats.tasks || {};
+  const peers = stats.peers || {};
+
+  $('#overview-cards').innerHTML = `
+    <div class="card blue">
+      <div class="label">Messages In</div>
+      <div class="value">${inbox.total || 0}</div>
+      <div class="sub">${inbox.new||0} new · ${inbox.processed||0} processed</div>
+    </div>
+    <div class="card green">
+      <div class="label">Messages Out</div>
+      <div class="value">${outbox.total || 0}</div>
+      <div class="sub">${outbox.acked||0} acked · ${outbox.sent||0} sent</div>
+    </div>
+    <div class="card yellow">
+      <div class="label">Tasks</div>
+      <div class="value">${tasks.completed || 0}<span style="font-size:16px;color:#8b949e">/${tasks.total || 0}</span></div>
+      <div class="sub">${tasks.in_progress||0} active · ${tasks.failed||0} failed</div>
+    </div>
+    <div class="card purple">
+      <div class="label">Peers</div>
+      <div class="value">${peers.online || 0}<span style="font-size:16px;color:#8b949e">/${peers.total || 0}</span></div>
+      <div class="sub">${peers.online||0} online</div>
+    </div>
+  `;
+
+  // Agent info
+  const agent = stats.agent || {};
+  const name = agent.claw_name || agent.peer_id || agent.agent_name || agent.name || 'unknown';
+  const id = agent.agent_id || agent.id || '?';
+  const wallet = agent.wallet || '';
+  $('#agent-info').innerHTML = `
+    <span class="status-dot"></span>
+    <strong>${escHtml(name)}</strong> #${id}
+    ${wallet ? ` · <span class="wallet">${fmtWallet(wallet)}</span>` : ''}
+  `;
+
+  // Activity feed
+  if (activity && activity.events) {
+    if (activity.events.length === 0) {
+      $('#activity-feed').innerHTML = '<div class="empty"><div class="emoji">📭</div>No activity yet</div>';
+    } else {
+      $('#activity-feed').innerHTML = activity.events.map(e => `
+        <div class="event ${escHtml(e.type)}">
+          <span class="time">${fmtTime(e.time)}</span>
+          <span class="icon">${e.icon}</span>
+          <span class="detail">${escHtml(e.detail)}</span>
+        </div>
+      `).join('');
+    }
+  }
+}
+
+// ── Rendering: Messages ────────────────────────
+function renderMessages(data) {
+  if (!data || !data.messages) return;
+  const msgs = data.messages;
+
+  // Update type filter dropdown
+  msgs.forEach(m => { if (m.msg_type) knownMsgTypes.add(m.msg_type); });
+  const typeSelect = $('#filter-type');
+  const curVal = typeSelect.value;
+  const opts = ['<option value="">All Types</option>'];
+  [...knownMsgTypes].sort().forEach(t => {
+    opts.push(`<option value="${escHtml(t)}" ${t===curVal?'selected':''}>${escHtml(t)}</option>`);
+  });
+  typeSelect.innerHTML = opts.join('');
+
+  if (msgs.length === 0) {
+    $('#messages-body').innerHTML = '<tr><td colspan="5"><div class="empty"><div class="emoji">📭</div>No messages</div></td></tr>';
+    return;
+  }
+
+  let html = '';
+  msgs.forEach((m, i) => {
+    const dir = m.direction === 'in' ? '↓' : '↑';
+    const dirClass = m.direction === 'in' ? 'dir-in' : 'dir-out';
+    const who = m.direction === 'in'
+      ? (m.sender_id || fmtWallet(m.sender_inbox_id) || '-')
+      : fmtWallet(m.recipient_wallet || '');
+    const payloadStr = JSON.stringify(m.payload || m.raw_content || {}, null, 2);
+
+    html += `
+      <tr onclick="togglePayload(${i})">
+        <td>${fmtDate(m.timestamp)}</td>
+        <td class="${dirClass}">${dir}</td>
+        <td>${escHtml(m.msg_type || '?')}</td>
+        <td>${escHtml(who)}</td>
+        <td>${badge(m.status)}</td>
+      </tr>
+      <tr class="payload-row" id="payload-${i}">
+        <td colspan="5"><pre>${escHtml(payloadStr)}</pre></td>
+      </tr>
+    `;
+  });
+  $('#messages-body').innerHTML = html;
+}
+
+function togglePayload(i) {
+  const row = document.getElementById(`payload-${i}`);
+  if (row) row.classList.toggle('open');
+}
+
+// ── Rendering: Tasks Kanban ────────────────────
+function renderTasks(data) {
+  if (!data || !data.tasks) return;
+  const tasks = data.tasks;
+
+  const buckets = {pending:[], progress:[], completed:[], failed:[]};
+  tasks.forEach(t => {
+    const s = t.state;
+    if (s === 'completed') buckets.completed.push(t);
+    else if (s === 'failed' || s === 'cancelled' || s === 'timed_out') buckets.failed.push(t);
+    else if (s === 'in_progress') buckets.progress.push(t);
+    else buckets.pending.push(t);
+  });
+
+  function renderCards(list) {
+    if (list.length === 0) return '<div class="empty" style="padding:20px"><div class="emoji">—</div></div>';
+    return list.map(t => {
+      const dur = t.duration_ms ? `<span class="duration">${t.duration_ms.toFixed(0)}ms</span>` : '';
+      const peer = t.peer_name || fmtWallet(t.peer_wallet) || '?';
+      const inputStr = typeof t.input_data === 'object' ? JSON.stringify(t.input_data) : String(t.input_data||'');
+      const inputPreview = inputStr.length > 60 ? inputStr.slice(0,60)+'…' : inputStr;
+      return `
+        <div class="task-card">
+          <div class="skill">${escHtml(t.skill || '?')}</div>
+          <div class="meta">peer: ${escHtml(peer)} · role: ${escHtml(t.role||'?')} ${dur}</div>
+          <div class="meta" style="margin-top:4px;color:#484f58" title="${escHtml(inputStr)}">${escHtml(inputPreview)}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  for (const [key, list] of Object.entries(buckets)) {
+    $(`#k-${key}`).innerHTML = renderCards(list);
+    $(`#k-${key}-count`).textContent = list.length;
+  }
+}
+
+// ── Rendering: Network ─────────────────────────
+function renderNetwork(peersData) {
+  if (!peersData) return;
+  const peers = peersData.peers || [];
+  const self = peersData.self || {};
+  const selfName = self.claw_name || self.peer_id || self.agent_name || self.name || 'me';
+
+  // SVG topology
+  const svg = $('#network-svg');
+  const cx = 300, cy = 200;
+  let svgContent = '';
+
+  // Self node (center)
+  svgContent += `
+    <circle cx="${cx}" cy="${cy}" r="30" fill="#1a2332" stroke="#58a6ff" stroke-width="2"/>
+    <text x="${cx}" y="${cy-6}" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">${escHtml(selfName)}</text>
+    <text x="${cx}" y="${cy+10}" text-anchor="middle" fill="#8b949e" font-size="9">(me)</text>
+  `;
+
+  if (peers.length === 0) {
+    svgContent += `<text x="${cx}" y="${cy+60}" text-anchor="middle" fill="#484f58" font-size="13">No peers discovered yet</text>`;
+  } else {
+    const radius = 140;
+    peers.forEach((p, i) => {
+      const angle = (2 * Math.PI * i / peers.length) - Math.PI/2;
+      const px = cx + radius * Math.cos(angle);
+      const py = cy + radius * Math.sin(angle);
+      const color = p.online ? '#3fb950' : '#484f58';
+      const latency = p.latency_ms ? `${p.latency_ms.toFixed(0)}ms` : '';
+
+      // Connection line
+      svgContent += `<line x1="${cx}" y1="${cy}" x2="${px}" y2="${py}" stroke="#30363d" stroke-width="1" stroke-dasharray="${p.online?'':'4,4'}"/>`;
+
+      // Latency label on line
+      if (latency) {
+        const mx = (cx+px)/2, my = (cy+py)/2;
+        svgContent += `<text x="${mx}" y="${my-4}" text-anchor="middle" fill="#8b949e" font-size="9">${latency}</text>`;
+      }
+
+      // Peer node
+      svgContent += `
+        <circle cx="${px}" cy="${py}" r="24" fill="#161b22" stroke="${color}" stroke-width="2"/>
+        <circle cx="${px+16}" cy="${py-16}" r="4" fill="${color}"/>
+        <text x="${px}" y="${py+3}" text-anchor="middle" fill="${color}" font-size="11" font-weight="700">${escHtml(p.name||'?')}</text>
+      `;
+    });
+  }
+
+  svg.innerHTML = svgContent;
+
+  // Peer list
+  if (peers.length === 0) {
+    $('#peer-list').innerHTML = '<div class="empty"><div class="emoji">🔍</div>No peers yet</div>';
+  } else {
+    $('#peer-list').innerHTML = peers.map(p => `
+      <div class="peer-item">
+        <div class="name">
+          <span class="online-dot ${p.online?'on':'off'}"></span>
+          ${escHtml(p.name||'?')}
+          ${p.latency_ms ? `<span style="color:#8b949e;font-size:11px;font-weight:400">${p.latency_ms.toFixed(0)}ms</span>` : ''}
+        </div>
+        <div class="wallet-addr">${escHtml(p.wallet||'-')}</div>
+        <div class="skills-list">
+          ${(p.skills||[]).map(s => `<span class="skill-tag">${escHtml(s)}</span>`).join('')}
+        </div>
+        <div style="font-size:11px;color:#484f58;margin-top:4px">
+          seen ${p.seen_count||0}x · last: ${fmtDate(p.last_seen)}
+        </div>
+      </div>
+    `).join('');
+  }
+}
+
+// ── Rendering: Stats ───────────────────────────
+function renderStats(stats, peersData) {
+  if (!stats) return;
+
+  // Message type bars
+  const msgTypes = stats.msg_types || {};
+  const maxMsg = Math.max(...Object.values(msgTypes), 1);
+  const colors = ['#58a6ff','#3fb950','#d29922','#f85149','#bc8cff','#f0883e','#a5d6ff','#7ee787'];
+  if (Object.keys(msgTypes).length === 0) {
+    $('#msg-type-bars').innerHTML = '<div class="empty">No message data</div>';
+  } else {
+    $('#msg-type-bars').innerHTML = Object.entries(msgTypes)
+      .sort((a,b) => b[1]-a[1])
+      .map(([type, count], i) => {
+        const pct = (count/maxMsg*100).toFixed(0);
+        const color = colors[i % colors.length];
+        return `
+          <div class="bar-row">
+            <span class="bar-label">${escHtml(type)}</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color}">${count}</div></div>
+            <span class="bar-count">${count}</span>
+          </div>
+        `;
+      }).join('');
+  }
+
+  // Task ratio
+  const taskStats = stats.tasks || {};
+  const completed = taskStats.completed || 0;
+  const failed = taskStats.failed || 0;
+  const total = completed + failed;
+  if (total > 0) {
+    const successPct = (completed/total*100).toFixed(0);
+    const failPct = (failed/total*100).toFixed(0);
+    $('#task-ratio').innerHTML = `
+      <div style="font-size:13px;margin-bottom:4px">Success Rate: <strong>${successPct}%</strong> (${completed}/${total})</div>
+      <div class="ratio-bar">
+        <div class="segment" style="width:${successPct}%;background:#3fb950">${successPct}%</div>
+        ${failed > 0 ? `<div class="segment" style="width:${failPct}%;background:#f85149">${failPct}%</div>` : ''}
+      </div>
+    `;
+  } else {
+    $('#task-ratio').innerHTML = '<div class="empty">No tasks completed yet</div>';
+  }
+
+  // Task state bars
+  const taskStates = ['pending','acked','in_progress','completed','failed','cancelled','timed_out'];
+  const taskColors = {'pending':'#8b949e','acked':'#58a6ff','in_progress':'#d29922',
+    'completed':'#3fb950','failed':'#f85149','cancelled':'#484f58','timed_out':'#f0883e'};
+  const taskEntries = taskStates.filter(s => (taskStats[s]||0) > 0).map(s => [s, taskStats[s]]);
+  const maxTask = Math.max(...taskEntries.map(e=>e[1]), 1);
+  $('#task-bars').innerHTML = taskEntries.map(([state, count]) => {
+    const pct = (count/maxTask*100).toFixed(0);
+    return `
+      <div class="bar-row">
+        <span class="bar-label">${escHtml(state)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${taskColors[state]||'#58a6ff'}">${count}</div></div>
+        <span class="bar-count">${count}</span>
+      </div>
+    `;
+  }).join('') || '<div class="empty">No task data</div>';
+
+  // Flow stats
+  const inbox = stats.inbox || {};
+  const outbox = stats.outbox || {};
+  $('#flow-stats').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px">
+      <div>
+        <div style="color:#8b949e;font-size:11px;text-transform:uppercase">Inbound</div>
+        <div style="font-size:24px;font-weight:700;color:#3fb950">${inbox.total||0}</div>
+        <div style="color:#8b949e;font-size:11px">${inbox.new||0} new · ${inbox.processed||0} processed · ${inbox.failed||0} failed</div>
+      </div>
+      <div>
+        <div style="color:#8b949e;font-size:11px;text-transform:uppercase">Outbound</div>
+        <div style="font-size:24px;font-weight:700;color:#58a6ff">${outbox.total||0}</div>
+        <div style="color:#8b949e;font-size:11px">${outbox.sent||0} sent · ${outbox.acked||0} acked</div>
+      </div>
+    </div>
+  `;
+
+  // Peer latency bars
+  const peers = (peersData && peersData.peers) || [];
+  const latencyPeers = peers.filter(p => p.latency_ms);
+  if (latencyPeers.length === 0) {
+    $('#latency-bars').innerHTML = '<div class="empty">No latency data</div>';
+  } else {
+    const maxLat = Math.max(...latencyPeers.map(p => p.latency_ms), 1);
+    $('#latency-bars').innerHTML = latencyPeers.map(p => {
+      const pct = (p.latency_ms/maxLat*100).toFixed(0);
+      const color = p.latency_ms < 200 ? '#3fb950' : p.latency_ms < 500 ? '#d29922' : '#f85149';
+      return `
+        <div class="bar-row">
+          <span class="bar-label">${escHtml(p.name)}</span>
+          <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color}">${p.latency_ms.toFixed(0)}ms</div></div>
+          <span class="bar-count">${p.latency_ms.toFixed(0)}ms</span>
+        </div>
+      `;
+    }).join('');
+  }
+}
+
+// ── Message Filters ────────────────────────────
+async function fetchFilteredMessages() {
+  const type = $('#filter-type').value;
+  const sender = $('#filter-sender').value.trim();
+  const status = $('#filter-status').value;
+  const params = new URLSearchParams();
+  if (type) params.set('type', type);
+  if (sender) params.set('sender', sender);
+  if (status) params.set('status', status);
+  params.set('limit', '100');
+  cachedMessages = await api(`/api/messages?${params}`);
+  renderMessages(cachedMessages);
+}
+
+$('#filter-type').addEventListener('change', fetchFilteredMessages);
+$('#filter-sender').addEventListener('input', fetchFilteredMessages);
+$('#filter-status').addEventListener('change', fetchFilteredMessages);
+
+// ── Refresh Logic ──────────────────────────────
+async function refresh() {
+  if (activeTab === 'overview') {
+    const [stats, activity] = await Promise.all([api('/api/stats'), api('/api/activity')]);
+    cachedStats = stats;
+    cachedActivity = activity;
+    renderOverview(stats, activity);
+  }
+  else if (activeTab === 'messages') {
+    await fetchFilteredMessages();
+  }
+  else if (activeTab === 'tasks') {
+    cachedTasks = await api('/api/tasks?limit=100');
+    renderTasks(cachedTasks);
+  }
+  else if (activeTab === 'network') {
+    cachedPeers = await api('/api/peers');
+    renderNetwork(cachedPeers);
+  }
+  else if (activeTab === 'stats') {
+    const [stats, peers] = await Promise.all([api('/api/stats'), api('/api/peers')]);
+    cachedStats = stats;
+    cachedPeers = peers;
+    renderStats(stats, peers);
+  }
+}
+
+// Initial load + auto-refresh
+refresh();
+refreshTimer = setInterval(refresh, 3000);
+</script>
+</body>
+</html>
