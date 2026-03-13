@@ -44,7 +44,10 @@ from agentfax_client import AgentFaxClient
 from router import MessageRouter, RouterContext
 from store import InboxStore, OutboxStore
 from peers import PeerManager
+from task_manager import TaskManager
+from executor import TaskExecutor, register_builtin_skills
 from handlers.builtin import register_builtin_handlers
+from handlers.task_handler import register_task_handlers
 
 # ── Logging setup ─────────────────────────────────────────────────
 
@@ -92,6 +95,8 @@ class AgentFaxDaemon:
         self.inbox_store = InboxStore(self.data_dir)
         self.outbox_store = OutboxStore(self.data_dir)
         self.peer_manager = PeerManager(self.data_dir)
+        self.task_manager = TaskManager(self.data_dir)
+        self.executor = TaskExecutor()
 
         # Router context
         self.ctx = RouterContext(
@@ -101,8 +106,14 @@ class AgentFaxDaemon:
             peer_manager=self.peer_manager,
         )
 
-        # Register built-in handlers
+        # Register built-in handlers (ping/pong/discover/ack)
         register_builtin_handlers(self.router, self.data_dir)
+
+        # Register task handlers (task_request/response/ack/cancel)
+        register_task_handlers(self.router, self.task_manager, self.executor)
+
+        # Register built-in skills (echo, reverse, word_count)
+        register_builtin_skills(self.executor)
 
         # Stats
         self._start_time = None
@@ -203,8 +214,14 @@ class AgentFaxDaemon:
             self.logger.info("Daemon stopped.")
 
     def _cycle(self):
-        """One poll cycle: pull messages → store → dispatch → ack."""
+        """One poll cycle: pull messages → store → dispatch → ack → check timeouts."""
         self._cycles += 1
+
+        # Check for timed-out tasks periodically (every 30 cycles ~ 1 min)
+        if self._cycles % 30 == 0:
+            timed_out = self.task_manager.check_timeouts()
+            if timed_out:
+                self.logger.warning(f"Tasks timed out: {timed_out}")
 
         messages = self.client.receive(clear=True)
         if not messages:
