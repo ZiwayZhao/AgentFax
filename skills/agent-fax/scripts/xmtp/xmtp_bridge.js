@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ClawMatch XMTP Bridge — local HTTP ↔ XMTP relay.
+ * AgentFax XMTP Bridge — local HTTP ↔ XMTP relay.
  *
  * Connects to the XMTP network using an Ethereum private key,
  * listens for incoming XMTP messages, and exposes a local HTTP API
@@ -14,11 +14,15 @@
  *   BRIDGE_PORT       — local HTTP port (default: 3500)
  *
  * Local API (localhost only):
- *   POST /send         — send XMTP message {to, content}
- *   GET  /inbox        — get buffered incoming messages [?since=ISO&clear=1]
- *   GET  /health       — bridge status {connected, address, env, inbox_count}
- *   POST /clear-inbox  — clear the inbox buffer
- *   GET  /can-message   — check if address can receive XMTP {?address=0x...}
+ *   POST /send               — send text message {to, content}
+ *   POST /send-attachment     — send file/image {to, filename, mimeType, content(base64)}
+ *   POST /send-remote-attachment — send large file ref {to, url, contentDigest, ...}
+ *   POST /broadcast           — send to multiple recipients {to:[], content}
+ *   GET  /inbox               — get buffered incoming messages [?since=ISO&clear=1]
+ *   GET  /health              — bridge status
+ *   POST /clear-inbox         — clear the inbox buffer
+ *   GET  /can-message         — check if address can receive XMTP {?address=0x...}
+ *   GET  /stream              — SSE stream of incoming messages (real-time push)
  */
 
 import { Client, IdentifierKind } from "@xmtp/node-sdk";
@@ -41,14 +45,19 @@ if (!PRIVATE_KEY) {
 }
 
 // ---------------------------------------------------------------------------
-// In-memory inbox buffer
+// In-memory inbox buffer + SSE clients
 // ---------------------------------------------------------------------------
 const inbox = [];
 const MAX_INBOX = 5000;
+const sseClients = new Set();
 
 function addToInbox(msg) {
   inbox.push(msg);
   if (inbox.length > MAX_INBOX) inbox.shift();
+  // Push to all SSE clients
+  for (const client of sseClients) {
+    client.write(`data: ${JSON.stringify(msg)}\n\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +88,7 @@ async function initXmtp() {
   };
 
   // Persistent encryption key for local DB (survives restarts)
-  const dataDir = process.env.CLAWMATCH_DATA_DIR || "";
+  const dataDir = process.env.AGENTFAX_DATA_DIR || process.env.CLAWMATCH_DATA_DIR || "";
   const dbKeyPath = dataDir
     ? path.join(dataDir, ".xmtp_db_key")
     : path.join(process.env.HOME || "/tmp", ".xmtp_db_key");
@@ -123,17 +132,44 @@ async function streamMessages() {
       // Skip our own messages
       if (message.senderInboxId === xmtpClient.inboxId) continue;
 
+      // Detect content type
+      const contentTypeId = message.contentType?.typeId || "text";
+      let content = message.content;
+      let attachment = null;
+
+      if (contentTypeId === "attachment" && content) {
+        // Inline attachment: serialize metadata, base64-encode content bytes
+        attachment = {
+          filename: content.filename || "unknown",
+          mimeType: content.mimeType || "application/octet-stream",
+          size: content.content?.length || 0,
+          data: content.content ? Buffer.from(content.content).toString("base64") : null,
+        };
+        content = `[attachment: ${attachment.filename} (${attachment.mimeType}, ${attachment.size} bytes)]`;
+      } else if (contentTypeId === "remoteAttachment" && content) {
+        attachment = {
+          type: "remote",
+          url: content.url,
+          contentDigest: content.contentDigest,
+          filename: content.filename || "unknown",
+          mimeType: content.mimeType || "application/octet-stream",
+        };
+        content = `[remote-attachment: ${attachment.url}]`;
+      }
+
       const entry = {
         id: message.id,
         senderInboxId: message.senderInboxId,
         conversationId: message.conversationId,
-        content: message.content,
+        contentType: contentTypeId,
+        content,
+        attachment,
         sentAt: message.sentAt?.toISOString() || new Date().toISOString(),
         receivedAt: new Date().toISOString(),
       };
 
       addToInbox(entry);
-      console.log(`[XMTP] Message from ${message.senderInboxId.slice(0, 12)}...`);
+      console.log(`[XMTP] ${contentTypeId} from ${message.senderInboxId.slice(0, 12)}...`);
     }
   } catch (err) {
     console.error("[XMTP] Stream error:", err.message);
@@ -156,7 +192,7 @@ function ethIdentifier(address) {
 // Express HTTP API (localhost only)
 // ---------------------------------------------------------------------------
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 // Health check
 app.get("/health", (_req, res) => {
@@ -170,35 +206,15 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// Send message via XMTP
+// Send text message via XMTP
 app.post("/send", async (req, res) => {
   try {
     const { to, content } = req.body;
     if (!to || !content) {
       return res.status(400).json({ error: "missing 'to' (wallet address) or 'content'" });
     }
-
     const targetAddress = to.toLowerCase();
-
-    // Check if the target can receive XMTP messages (v5.x: uses identifiers)
-    const canMessageResult = await xmtpClient.canMessage([ethIdentifier(targetAddress)]);
-    const canSend = canMessageResult.get(targetAddress);
-    if (!canSend) {
-      return res.status(404).json({
-        error: `Address ${targetAddress} is not reachable on XMTP (${XMTP_ENV}). They need to start their bridge first.`,
-      });
-    }
-
-    // Sync conversations
-    await xmtpClient.conversations.sync();
-
-    // Create or get DM conversation (v5.x: createDmWithIdentifier)
-    const dm = await xmtpClient.conversations.createDmWithIdentifier(
-      ethIdentifier(targetAddress)
-    );
-    await dm.sync();
-
-    // Send message (v5.x: sendText instead of send)
+    const dm = await getDm(targetAddress);
     const messageText = typeof content === "string" ? content : JSON.stringify(content);
     const msgId = await dm.sendText(messageText);
 
@@ -252,6 +268,134 @@ app.get("/can-message", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Helper: get or create DM conversation with a wallet address
+// ---------------------------------------------------------------------------
+async function getDm(targetAddress) {
+  const canMessageResult = await xmtpClient.canMessage([ethIdentifier(targetAddress)]);
+  const canSend = canMessageResult.get(targetAddress);
+  if (!canSend) {
+    throw new Error(`Address ${targetAddress} is not reachable on XMTP (${XMTP_ENV}).`);
+  }
+  await xmtpClient.conversations.sync();
+  const dm = await xmtpClient.conversations.createDmWithIdentifier(
+    ethIdentifier(targetAddress)
+  );
+  await dm.sync();
+  return dm;
+}
+
+// Send inline attachment (< 1MB) via XMTP
+app.post("/send-attachment", async (req, res) => {
+  try {
+    const { to, filename, mimeType, content } = req.body;
+    if (!to || !filename || !content) {
+      return res.status(400).json({ error: "missing 'to', 'filename', or 'content' (base64)" });
+    }
+    const targetAddress = to.toLowerCase();
+    const dm = await getDm(targetAddress);
+
+    const contentBytes = new Uint8Array(Buffer.from(content, "base64"));
+    if (contentBytes.length > 1_000_000) {
+      return res.status(413).json({
+        error: `Attachment too large (${contentBytes.length} bytes). Use /send-remote-attachment for files > 1MB.`,
+      });
+    }
+
+    const msgId = await dm.sendAttachment({
+      filename,
+      mimeType: mimeType || "application/octet-stream",
+      content: contentBytes,
+    });
+
+    res.json({
+      status: "sent",
+      messageId: msgId,
+      to: targetAddress,
+      conversationId: dm.id,
+      type: "attachment",
+      filename,
+      size: contentBytes.length,
+    });
+  } catch (err) {
+    console.error("[XMTP] Send attachment error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Send remote attachment (any size, stored externally)
+app.post("/send-remote-attachment", async (req, res) => {
+  try {
+    const { to, url, contentDigest, secret, salt, nonce, scheme } = req.body;
+    if (!to || !url || !contentDigest || !secret || !salt || !nonce) {
+      return res.status(400).json({
+        error: "missing required fields: to, url, contentDigest, secret, salt, nonce",
+      });
+    }
+    const targetAddress = to.toLowerCase();
+    const dm = await getDm(targetAddress);
+
+    const msgId = await dm.sendRemoteAttachment({
+      url,
+      contentDigest,
+      secret,
+      salt,
+      nonce,
+      scheme: scheme || "https://",
+    });
+
+    res.json({
+      status: "sent",
+      messageId: msgId,
+      to: targetAddress,
+      conversationId: dm.id,
+      type: "remote_attachment",
+      url,
+    });
+  } catch (err) {
+    console.error("[XMTP] Send remote attachment error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Broadcast: send same message to multiple recipients
+app.post("/broadcast", async (req, res) => {
+  try {
+    const { to, content } = req.body;
+    if (!to || !Array.isArray(to) || !content) {
+      return res.status(400).json({ error: "missing 'to' (array of wallets) or 'content'" });
+    }
+    const results = [];
+    for (const addr of to) {
+      try {
+        const targetAddress = addr.toLowerCase();
+        const dm = await getDm(targetAddress);
+        const messageText = typeof content === "string" ? content : JSON.stringify(content);
+        const msgId = await dm.sendText(messageText);
+        results.push({ to: targetAddress, status: "sent", messageId: msgId });
+      } catch (err) {
+        results.push({ to: addr, status: "failed", error: err.message });
+      }
+    }
+    res.json({ status: "broadcast_complete", results, total: to.length });
+  } catch (err) {
+    console.error("[XMTP] Broadcast error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// SSE stream: real-time push of incoming messages
+app.get("/stream", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write(`data: ${JSON.stringify({ event: "connected", address: walletAddress })}\n\n`);
+  sseClients.add(res);
+  req.on("close", () => sseClients.delete(res));
 });
 
 // ---------------------------------------------------------------------------
