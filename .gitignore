@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+node_modules/
+.env
+*.log
+dist/
+.DS_Store
+bridge_port
+*.db
+*.sqlite3
