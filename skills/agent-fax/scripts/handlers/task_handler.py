@@ -85,15 +85,36 @@ def register_task_handlers(router, task_manager, executor):
             except Exception as e:
                 logger.error(f"Failed to send task_ack: {e}")
 
-        # Execute the skill
+        # Project relevant context for this task (Phase 6)
+        task_context = None
+        if ctx.context_manager and ctx.security_manager:
+            peer_tier = ctx.security_manager.get_trust_tier(sender, sender_wallet)
+            task_context = ctx.context_manager.project_for_task(
+                skill, peer_tier
+            )
+            if task_context:
+                logger.debug(
+                    f"Projected {len(task_context)} context items for task {task_id}"
+                )
+
+        # Execute the skill (pass context as part of input if available)
         task_manager.start_task(task_id)
-        exec_result = executor.execute(skill, input_data)
+        exec_input = input_data
+        if task_context and isinstance(input_data, dict):
+            exec_input = {**input_data, "_context": task_context}
+        exec_result = executor.execute(skill, exec_input)
 
         if exec_result.get("success"):
+            duration = exec_result.get("duration_ms", 0)
             task_manager.complete_task(task_id, result=exec_result.get("result"))
-            logger.info(
-                f"Task {task_id} completed: {exec_result.get('duration_ms', 0):.0f}ms"
-            )
+            logger.info(f"Task {task_id} completed: {duration:.0f}ms")
+
+            # Record reputation — successful task execution
+            if ctx.reputation_manager:
+                ctx.reputation_manager.record_interaction(
+                    sender, "task_completed", True, latency_ms=duration
+                )
+
             return {
                 "type": "task_response",
                 "payload": {
@@ -101,13 +122,21 @@ def register_task_handlers(router, task_manager, executor):
                     "skill": skill,
                     "status": "completed",
                     "output": exec_result.get("result"),
-                    "duration_ms": exec_result.get("duration_ms"),
+                    "duration_ms": duration,
                 },
             }
         else:
             error_msg = exec_result.get("error", "unknown error")
             task_manager.fail_task(task_id, error_msg)
             logger.error(f"Task {task_id} failed: {error_msg}")
+
+            # Record reputation — failed task execution
+            if ctx.reputation_manager:
+                ctx.reputation_manager.record_interaction(
+                    sender, "task_failed", False,
+                    metadata={"error": error_msg}
+                )
+
             return {
                 "type": "task_error",
                 "payload": {
@@ -162,6 +191,29 @@ def register_task_handlers(router, task_manager, executor):
         task = task_manager.get_by_correlation(msg.get("correlation_id", ""))
         if task:
             task_manager.complete_task(task["task_id"], result=output)
+
+        # Record reputation — peer completed our task
+        if ctx.reputation_manager:
+            ctx.reputation_manager.record_interaction(
+                sender, "task_completed", True, latency_ms=duration
+            )
+
+        # Phase 7: If this task is part of a workflow, complete the step
+        workflow_id = payload.get("workflow_id")
+        step_id = payload.get("step_id")
+        if workflow_id and step_id and ctx.workflow_manager:
+            try:
+                newly_ready = ctx.workflow_manager.complete_step(
+                    workflow_id, step_id, output or {}
+                )
+                if newly_ready:
+                    logger.info(
+                        f"Workflow {workflow_id}: step {step_id} done, "
+                        f"newly ready: {newly_ready}"
+                    )
+            except Exception as e:
+                logger.error(f"Workflow step completion error: {e}")
+
         return None
 
     @router.handler("task_error")
@@ -176,6 +228,22 @@ def register_task_handlers(router, task_manager, executor):
         task = task_manager.get_by_correlation(msg.get("correlation_id", ""))
         if task:
             task_manager.fail_task(task["task_id"], error)
+
+        # Record reputation — peer failed our task
+        if ctx.reputation_manager:
+            ctx.reputation_manager.record_interaction(
+                sender, "task_failed", False, metadata={"error": error}
+            )
+
+        # Phase 7: If this task is part of a workflow, fail the step
+        workflow_id = payload.get("workflow_id")
+        step_id = payload.get("step_id")
+        if workflow_id and step_id and ctx.workflow_manager:
+            try:
+                ctx.workflow_manager.fail_step(workflow_id, step_id, error)
+            except Exception as e:
+                logger.error(f"Workflow step failure error: {e}")
+
         return None
 
     @router.handler("task_progress")

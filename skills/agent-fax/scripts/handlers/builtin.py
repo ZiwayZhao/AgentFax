@@ -76,6 +76,12 @@ def register_builtin_handlers(router, data_dir: str):
                 latency_ms=latency,
             )
 
+        # Record reputation
+        if ctx.reputation_manager:
+            ctx.reputation_manager.record_interaction(
+                sender, "ping_response", True, latency_ms=latency
+            )
+
         return None  # No reply needed
 
     # ── discover → reply with capabilities ────────────────────────

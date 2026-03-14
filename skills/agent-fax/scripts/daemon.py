@@ -46,8 +46,14 @@ from store import InboxStore, OutboxStore
 from peers import PeerManager
 from task_manager import TaskManager
 from executor import TaskExecutor, register_builtin_skills
+from security import SecurityManager
+from reputation import ReputationManager
+from context_manager import ContextManager
+from workflow import WorkflowManager
 from handlers.builtin import register_builtin_handlers
 from handlers.task_handler import register_task_handlers
+from handlers.context_handler import register_context_handlers
+from handlers.workflow_handler import register_workflow_handlers
 
 # ── Logging setup ─────────────────────────────────────────────────
 
@@ -98,12 +104,29 @@ class AgentFaxDaemon:
         self.task_manager = TaskManager(self.data_dir)
         self.executor = TaskExecutor()
 
+        # Phase 4+5: Security & Reputation
+        self.security_manager = SecurityManager(self.data_dir)
+        self.reputation_manager = ReputationManager(self.data_dir)
+
+        # Phase 6: Context Exchange
+        self.context_manager = ContextManager(self.data_dir)
+
+        # Phase 7: Workflow Orchestration
+        self.workflow_manager = WorkflowManager(self.data_dir)
+
+        # Inject security middleware (runs before all handlers)
+        self.router.add_middleware(self.security_manager.security_middleware)
+
         # Router context
         self.ctx = RouterContext(
             client=self.client,
             inbox_store=self.inbox_store,
             outbox_store=self.outbox_store,
             peer_manager=self.peer_manager,
+            security_manager=self.security_manager,
+            reputation_manager=self.reputation_manager,
+            context_manager=self.context_manager,
+            workflow_manager=self.workflow_manager,
         )
 
         # Register built-in handlers (ping/pong/discover/ack)
@@ -111,6 +134,17 @@ class AgentFaxDaemon:
 
         # Register task handlers (task_request/response/ack/cancel)
         register_task_handlers(self.router, self.task_manager, self.executor)
+
+        # Register context handlers (context_sync/query/response)
+        register_context_handlers(
+            self.router, self.context_manager, self.security_manager
+        )
+
+        # Register workflow handlers (workflow_request)
+        register_workflow_handlers(
+            self.router, self.workflow_manager,
+            self.task_manager, self.executor
+        )
 
         # Register built-in skills (echo, reverse, word_count)
         register_builtin_skills(self.executor)
@@ -211,6 +245,9 @@ class AgentFaxDaemon:
                 os.remove(pid_file)
             self.inbox_store.close()
             self.outbox_store.close()
+            self.reputation_manager.close()
+            self.context_manager.close()
+            self.workflow_manager.close()
             self.logger.info("Daemon stopped.")
 
     def _cycle(self):
@@ -222,6 +259,26 @@ class AgentFaxDaemon:
             timed_out = self.task_manager.check_timeouts()
             if timed_out:
                 self.logger.warning(f"Tasks timed out: {timed_out}")
+
+            # Check reputation and auto-promote/demote trust tiers
+            changes = self.reputation_manager.check_and_update_tiers(
+                self.security_manager
+            )
+            for c in changes:
+                self.logger.info(
+                    f"Trust tier change: {c['peer_id']} "
+                    f"{c['old']} → {c['new']}"
+                )
+
+            # Cleanup expired context items
+            self.context_manager.cleanup_expired()
+
+        # ── Workflow step dispatch ────────────────────────────────
+        # Check running workflows and dispatch ready steps
+        try:
+            self._dispatch_workflow_steps()
+        except Exception as e:
+            self.logger.error(f"Workflow dispatch error: {e}")
 
         messages = self.client.receive(clear=True)
         if not messages:
@@ -259,6 +316,106 @@ class AgentFaxDaemon:
                 self.logger.error(f"Dispatch error: {e}")
                 if msg_id:
                     self.inbox_store.mark_status(msg_id, "failed")
+
+    def _dispatch_workflow_steps(self):
+        """Check running workflows and dispatch ready steps."""
+        running = self.workflow_manager.list_workflows(state="running")
+        for wf in running:
+            wf_id = wf["workflow_id"]
+            ready_steps = self.workflow_manager.get_ready_steps(wf_id)
+
+            for step in ready_steps:
+                step_id = step["step_id"]
+                skill = step["skill"]
+                target_peer = step.get("target_peer")
+
+                # Resolve input from previous steps
+                resolved_input = self.workflow_manager.resolve_step_input(
+                    wf_id, step_id
+                )
+
+                if target_peer:
+                    # Remote execution: send workflow_request to peer
+                    peer = self.peer_manager.get(target_peer)
+                    if not peer or not peer.get("wallet"):
+                        self.logger.warning(
+                            f"Cannot dispatch step {step_id}: "
+                            f"peer '{target_peer}' not found"
+                        )
+                        self.workflow_manager.fail_step(
+                            wf_id, step_id,
+                            f"Peer '{target_peer}' not found"
+                        )
+                        continue
+
+                    # Project context for this step
+                    context_items = []
+                    if self.context_manager:
+                        peer_tier = self.security_manager.get_trust_tier(
+                            target_peer
+                        )
+                        context_items = self.context_manager.project_for_task(
+                            skill, peer_tier
+                        )
+
+                    # Send workflow_request
+                    task_id = f"wf_{wf_id}_{step_id}_{int(time.time())}"
+                    corr_id = f"wf_{wf_id}_{step_id}"
+
+                    try:
+                        self.client.send(
+                            to_wallet=peer["wallet"],
+                            msg_type="workflow_request",
+                            payload={
+                                "workflow_id": wf_id,
+                                "step": {
+                                    "step_id": step_id,
+                                    "skill": skill,
+                                    "input": resolved_input,
+                                    "context": context_items,
+                                    "timeout_seconds": step.get(
+                                        "timeout_seconds", 300
+                                    ),
+                                },
+                                "workflow_metadata": {
+                                    "initiator": self.client._sender_id,
+                                },
+                            },
+                            correlation_id=corr_id,
+                        )
+                        self.workflow_manager.dispatch_step(
+                            wf_id, step_id, task_id
+                        )
+                        self.logger.info(
+                            f"Dispatched workflow step {step_id} "
+                            f"to {target_peer}"
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to dispatch step {step_id}: {e}"
+                        )
+                        self.workflow_manager.fail_step(
+                            wf_id, step_id, str(e)
+                        )
+
+                else:
+                    # Local execution
+                    self.workflow_manager.start_step(wf_id, step_id)
+                    exec_result = self.executor.execute(skill, resolved_input)
+
+                    if exec_result.get("success"):
+                        newly_ready = self.workflow_manager.complete_step(
+                            wf_id, step_id, exec_result.get("result", {})
+                        )
+                        self.logger.info(
+                            f"Local step {step_id} completed. "
+                            f"Newly ready: {newly_ready}"
+                        )
+                    else:
+                        self.workflow_manager.fail_step(
+                            wf_id, step_id,
+                            exec_result.get("error", "execution failed")
+                        )
 
     def stop(self):
         """Signal the daemon to stop."""

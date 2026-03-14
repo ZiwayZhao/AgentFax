@@ -81,6 +81,13 @@ def build_message(
     sender_id: str = None,
     correlation_id: str = None,
     ttl: int = 3600,
+    # v1.1 optional fields (backward compatible — old agents ignore these)
+    trace_id: str = None,
+    span_id: str = None,
+    parent_span_id: str = None,
+    context: dict = None,
+    trust_required: str = None,
+    priority: str = None,
 ) -> dict:
     """Build an AgentFax protocol envelope.
 
@@ -90,6 +97,12 @@ def build_message(
         sender_id: Sender's human-readable agent name
         correlation_id: For request/response tracking
         ttl: Time-to-live in seconds (default 1 hour)
+        trace_id: OpenTelemetry trace ID (v1.1)
+        span_id: OpenTelemetry span ID (v1.1)
+        parent_span_id: Parent span ID for cross-agent tracing (v1.1)
+        context: Shared context dict (v1.1)
+        trust_required: Minimum trust tier required (v1.1)
+        priority: Message priority: low/normal/high/urgent (v1.1)
 
     Returns:
         AgentFax protocol envelope dict
@@ -106,6 +119,21 @@ def build_message(
         msg["sender_id"] = sender_id
     if correlation_id:
         msg["correlation_id"] = correlation_id
+
+    # v1.1 optional fields — only included when set
+    if trace_id:
+        msg["trace_id"] = trace_id
+    if span_id:
+        msg["span_id"] = span_id
+    if parent_span_id:
+        msg["parent_span_id"] = parent_span_id
+    if context:
+        msg["context"] = context
+    if trust_required:
+        msg["trust_required"] = trust_required
+    if priority:
+        msg["priority"] = priority
+
     return msg
 
 
