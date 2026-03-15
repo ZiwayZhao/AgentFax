@@ -46,7 +46,7 @@ from store import InboxStore, OutboxStore
 from peers import PeerManager
 from task_manager import TaskManager
 from executor import TaskExecutor, register_builtin_skills
-from security import SecurityManager
+from security import TrustManager
 from reputation import ReputationManager
 from context_manager import ContextManager
 from workflow import WorkflowManager
@@ -104,8 +104,8 @@ class AgentFaxDaemon:
         self.task_manager = TaskManager(self.data_dir)
         self.executor = TaskExecutor()
 
-        # Phase 4+5: Security & Reputation
-        self.security_manager = SecurityManager(self.data_dir)
+        # Trust & Reputation
+        self.trust_manager = TrustManager(self.data_dir)
         self.reputation_manager = ReputationManager(self.data_dir)
 
         # Phase 6: Context Exchange
@@ -126,16 +126,13 @@ class AgentFaxDaemon:
         # Phase 7: Workflow Orchestration
         self.workflow_manager = WorkflowManager(self.data_dir)
 
-        # Inject security middleware (runs before all handlers)
-        self.router.add_middleware(self.security_manager.security_middleware)
-
         # Router context
         self.ctx = RouterContext(
             client=self.client,
             inbox_store=self.inbox_store,
             outbox_store=self.outbox_store,
             peer_manager=self.peer_manager,
-            security_manager=self.security_manager,
+            trust_manager=self.trust_manager,
             reputation_manager=self.reputation_manager,
             context_manager=self.context_manager,
             workflow_manager=self.workflow_manager,
@@ -149,7 +146,7 @@ class AgentFaxDaemon:
 
         # Register context handlers (context_sync/query/response)
         register_context_handlers(
-            self.router, self.context_manager, self.security_manager
+            self.router, self.context_manager, self.trust_manager
         )
 
         # Register workflow handlers (workflow_request)
@@ -274,7 +271,7 @@ class AgentFaxDaemon:
 
             # Check reputation and auto-promote/demote trust tiers
             changes = self.reputation_manager.check_and_update_tiers(
-                self.security_manager
+                self.trust_manager
             )
             for c in changes:
                 self.logger.info(
@@ -363,7 +360,7 @@ class AgentFaxDaemon:
                     # Project context for this step
                     context_items = []
                     if self.context_manager:
-                        peer_tier = self.security_manager.get_trust_tier(
+                        peer_tier = self.trust_manager.get_trust_tier(
                             target_peer
                         )
                         context_items = self.context_manager.project_for_task(

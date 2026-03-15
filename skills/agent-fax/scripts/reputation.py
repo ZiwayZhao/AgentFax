@@ -15,7 +15,7 @@ Usage:
     rep = rm.get_reputation("icy")
     # → {peer_id: "icy", success_rate: 0.95, total: 20, ...}
 
-    changes = rm.check_and_update_tiers(security_manager)
+    changes = rm.check_and_update_tiers(trust_manager)
     # → [{"peer_id": "icy", "old": "KNOWN", "new": "INTERNAL"}]
 """
 
@@ -207,13 +207,13 @@ class ReputationManager:
 
         return 0
 
-    def check_and_update_tiers(self, security_manager) -> List[dict]:
+    def check_and_update_tiers(self, trust_manager) -> List[dict]:
         """Check all peers and auto-promote/demote based on reputation.
 
-        Does NOT touch PRIVILEGED (3) or SYSTEM (4) tiers — those are manual only.
+        Does NOT touch PRIVILEGED (3) tiers — those are manual only.
 
         Args:
-            security_manager: SecurityManager instance to update tiers on
+            trust_manager: TrustManager instance to update tiers on
 
         Returns:
             List of changes: [{"peer_id": "icy", "old": "KNOWN", "new": "INTERNAL"}]
@@ -225,7 +225,7 @@ class ReputationManager:
 
         for rep in all_reps:
             peer_id = rep["peer_id"]
-            current_tier = security_manager.get_trust_tier(peer_id)
+            current_tier = trust_manager.get_trust_tier(peer_id)
 
             # Skip manually managed tiers
             if current_tier >= TrustTier.PRIVILEGED:
@@ -237,7 +237,7 @@ class ReputationManager:
                 old_name = TrustTier(current_tier).name
                 new_name = TrustTier(suggested).name
 
-                security_manager.set_trust_tier(peer_id, TrustTier(suggested))
+                trust_manager.set_trust_tier(peer_id, TrustTier(suggested))
 
                 # Update summary table with transaction protection
                 cur = self.conn.cursor()

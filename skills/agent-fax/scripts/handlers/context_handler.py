@@ -11,13 +11,13 @@ import logging
 logger = logging.getLogger("agentfax.handlers.context")
 
 
-def register_context_handlers(router, context_manager, security_manager):
+def register_context_handlers(router, context_manager, trust_manager):
     """Register context-related handlers with the router.
 
     Args:
         router: MessageRouter instance
         context_manager: ContextManager instance
-        security_manager: SecurityManager instance
+        trust_manager: TrustManager instance
     """
 
     # ── context_sync: receive context items from a peer ──────────
@@ -70,7 +70,7 @@ def register_context_handlers(router, context_manager, security_manager):
         )
 
         # Get sender's trust tier to determine what we can share
-        peer_tier = security_manager.get_trust_tier(sender, sender_wallet)
+        peer_tier = trust_manager.get_trust_tier(sender)
 
         # Build filtered response based on trust
         response_payload = context_manager.build_context_response_payload(

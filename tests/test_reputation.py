@@ -140,7 +140,7 @@ class TestCheckAndUpdateTiers:
     """Test auto-promotion/demotion integration."""
 
     def _make_mock_sm(self, initial_tiers=None):
-        """Create a mock SecurityManager."""
+        """Create a mock TrustManager."""
         tiers = initial_tiers or {}
         sm = MagicMock()
         sm.get_trust_tier = lambda peer_id: tiers.get(peer_id, 0)

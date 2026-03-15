@@ -87,8 +87,8 @@ def register_task_handlers(router, task_manager, executor):
 
         # Project relevant context for this task (Phase 6)
         task_context = None
-        if ctx.context_manager and ctx.security_manager:
-            peer_tier = ctx.security_manager.get_trust_tier(sender, sender_wallet)
+        if ctx.context_manager and ctx.trust_manager:
+            peer_tier = ctx.trust_manager.get_trust_tier(sender)
             task_context = ctx.context_manager.project_for_task(
                 skill, peer_tier
             )

@@ -42,13 +42,13 @@ class RouterContext:
     """
 
     def __init__(self, client, inbox_store=None, outbox_store=None, peer_manager=None,
-                 security_manager=None, reputation_manager=None,
+                 trust_manager=None, reputation_manager=None,
                  context_manager=None, workflow_manager=None):
         self.client = client
         self.inbox_store = inbox_store
         self.outbox_store = outbox_store
         self.peer_manager = peer_manager
-        self.security_manager = security_manager
+        self.trust_manager = trust_manager
         self.reputation_manager = reputation_manager
         self.context_manager = context_manager
         self.workflow_manager = workflow_manager
