@@ -94,6 +94,7 @@ class AgentFaxDaemon:
         self.data_dir = str(Path(data_dir).expanduser())
         self.poll_interval = poll_interval
         self.running = False
+        self.logger = logging.getLogger("agentfax.daemon")
 
         # Core components
         self.client = AgentFaxClient(self.data_dir)
@@ -117,11 +118,11 @@ class AgentFaxDaemon:
             llm_engine = LLMProjectionEngine()
             if llm_engine.is_available:
                 self.context_manager.set_llm_engine(llm_engine)
-                logger.info("LLM projection engine enabled")
+                self.logger.info("LLM projection engine enabled")
             else:
-                logger.info("LLM projection engine unavailable, using fallback")
+                self.logger.info("LLM projection engine unavailable, using fallback")
         except Exception as e:
-            logger.info(f"LLM projection not loaded: {e}")
+            self.logger.info(f"LLM projection not loaded: {e}")
 
         # Phase 7: Workflow Orchestration
         self.workflow_manager = WorkflowManager(self.data_dir)
