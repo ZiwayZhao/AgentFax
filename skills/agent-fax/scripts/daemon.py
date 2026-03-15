@@ -111,6 +111,18 @@ class AgentFaxDaemon:
         # Phase 6: Context Exchange
         self.context_manager = ContextManager(self.data_dir)
 
+        # LLM-driven context projection (optional, degrades gracefully)
+        try:
+            from llm_projection import LLMProjectionEngine
+            llm_engine = LLMProjectionEngine()
+            if llm_engine.is_available:
+                self.context_manager.set_llm_engine(llm_engine)
+                logger.info("LLM projection engine enabled")
+            else:
+                logger.info("LLM projection engine unavailable, using fallback")
+        except Exception as e:
+            logger.info(f"LLM projection not loaded: {e}")
+
         # Phase 7: Workflow Orchestration
         self.workflow_manager = WorkflowManager(self.data_dir)
 

@@ -247,27 +247,38 @@ class ContextManager:
 
     # ── Task-relevant projection ──────────────────────────────────
 
+    def set_llm_engine(self, engine):
+        """Set the LLM projection engine for intelligent context selection.
+
+        Args:
+            engine: LLMProjectionEngine instance (or None to use fallback)
+        """
+        self._llm_engine = engine
+        logger.info(f"LLM projection engine set: {engine is not None}")
+
     def project_for_task(
         self,
         task_type: str,
         peer_trust_tier: int,
         max_items: int = 10,
+        task_description: str = None,
+        peer_name: str = "unknown",
     ) -> List[dict]:
         """Auto-select context items relevant to a task, filtered by peer's trust.
 
-        This is the core innovation: instead of sharing everything or nothing,
-        project only what's relevant and permitted.
+        Two-phase approach:
+        1. HARD RULES (always enforced): privacy tier + trust level filtering
+        2. RELEVANCE (LLM or fallback): semantic selection from eligible items
 
         Rules:
         - peer KNOWN (tier 1) → only L1_PUBLIC items
         - peer INTERNAL (tier 2+) → L1 + L2 items
         - L3_PRIVATE items → NEVER projected, regardless of tier
-        - Items matched by task_type → relevant categories from TASK_CATEGORY_MAP
         """
         # Clean up expired items first to prevent stale data leakage
         self.cleanup_expired()
 
-        # Determine max privacy tier based on peer trust
+        # ── Phase 1: Hard rules — privacy tier filtering ─────────
         if peer_trust_tier >= 2:  # INTERNAL+
             privacy_max = PrivacyTier.L2_TRUSTED
         elif peer_trust_tier >= 1:  # KNOWN
@@ -275,35 +286,106 @@ class ContextManager:
         else:
             return []  # UNTRUSTED gets nothing
 
-        # Get relevant categories for this task type
-        categories = TASK_CATEGORY_MAP.get(
-            task_type,
-            TASK_CATEGORY_MAP["default"]
-        )
+        # Get ALL eligible items (not filtered by category yet)
+        eligible_items = self.query_context(privacy_max=privacy_max)
 
-        # Query matching items
-        all_items = []
-        for cat in categories:
-            items = self.query_context(category=cat, privacy_max=privacy_max)
-            all_items.extend(items)
+        if not eligible_items:
+            return []
 
-        # Deduplicate and limit
+        # Strip to projection-safe fields
+        eligible_clean = []
         seen_ids = set()
-        result = []
-        for item in all_items:
+        for item in eligible_items:
             if item["context_id"] not in seen_ids:
                 seen_ids.add(item["context_id"])
-                # Strip internal fields for projection
-                result.append({
+                eligible_clean.append({
                     "context_id": item["context_id"],
                     "key": item["key"],
                     "value": item["value"],
                     "category": item["category"],
                 })
-                if len(result) >= max_items:
-                    break
 
+        # ── Phase 2: Relevance selection ─────────────────────────
+        engine = getattr(self, "_llm_engine", None)
+
+        if engine is not None:
+            result = engine.project(
+                task_description=task_description or f"Execute {task_type} task",
+                task_type=task_type,
+                available_items=eligible_clean,
+                peer_name=peer_name,
+            )
+            selected = result.selected_items[:max_items]
+
+            # Log projection to audit table
+            self._log_projection(
+                task_type=task_type,
+                peer_name=peer_name,
+                selected_ids=[s["context_id"] for s in selected],
+                method=result.method,
+                rationale=result.rationale,
+                trust_tier=peer_trust_tier,
+            )
+            return selected
+        else:
+            # Fallback: static category matching
+            return self._fallback_project(
+                task_type, eligible_clean, max_items
+            )
+
+    def _fallback_project(
+        self,
+        task_type: str,
+        eligible_items: List[dict],
+        max_items: int,
+    ) -> List[dict]:
+        """Fallback projection using static TASK_CATEGORY_MAP."""
+        categories = TASK_CATEGORY_MAP.get(
+            task_type,
+            TASK_CATEGORY_MAP["default"]
+        )
+
+        result = [
+            item for item in eligible_items
+            if item.get("category") in categories
+        ][:max_items]
+
+        self._log_projection(
+            task_type=task_type,
+            peer_name="",
+            selected_ids=[r["context_id"] for r in result],
+            method="fallback",
+            rationale=f"Static categories: {categories}",
+            trust_tier=0,
+        )
         return result
+
+    def _log_projection(
+        self,
+        task_type: str,
+        peer_name: str,
+        selected_ids: List[str],
+        method: str,
+        rationale: str,
+        trust_tier: int,
+    ):
+        """Record a projection event for audit purposes."""
+        now = datetime.now(timezone.utc).isoformat()
+        cur = self.conn.cursor()
+        cur.execute("""
+            INSERT INTO context_projections
+                (task_id, peer_id, context_ids, projected_at,
+                 trust_tier_at_time)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            task_type,
+            peer_name,
+            json.dumps({"ids": selected_ids, "method": method,
+                        "rationale": rationale[:500]}),
+            now,
+            trust_tier,
+        ))
+        self.conn.commit()
 
     # ── Peer context (received from others) ───────────────────────
 
