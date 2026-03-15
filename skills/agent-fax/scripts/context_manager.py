@@ -264,6 +264,9 @@ class ContextManager:
         - L3_PRIVATE items → NEVER projected, regardless of tier
         - Items matched by task_type → relevant categories from TASK_CATEGORY_MAP
         """
+        # Clean up expired items first to prevent stale data leakage
+        self.cleanup_expired()
+
         # Determine max privacy tier based on peer trust
         if peer_trust_tier >= 2:  # INTERNAL+
             privacy_max = PrivacyTier.L2_TRUSTED

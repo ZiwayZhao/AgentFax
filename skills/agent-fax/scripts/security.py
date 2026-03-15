@@ -231,9 +231,12 @@ class SecurityManager:
             self._stats["blocked_replay"] += 1
             return False, "Replay detected: duplicate message hash"
         self._seen_hashes[msg_hash] = True
-        # Evict old hashes if over limit
-        while len(self._seen_hashes) > self._seen_max:
-            self._seen_hashes.popitem(last=False)
+        # Batch evict old hashes if over limit (clear 20% at once)
+        if len(self._seen_hashes) > self._seen_max:
+            evict_count = max(1, self._seen_max // 5)
+            for _ in range(evict_count):
+                if self._seen_hashes:
+                    self._seen_hashes.popitem(last=False)
 
         # 5. Rate limiting (per sender, exempt certain types)
         msg_type = msg.get("type", "")

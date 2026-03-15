@@ -239,14 +239,19 @@ class ReputationManager:
 
                 security_manager.set_trust_tier(peer_id, TrustTier(suggested))
 
-                # Update summary table
+                # Update summary table with transaction protection
                 cur = self.conn.cursor()
-                cur.execute(
-                    "UPDATE peer_reputation_summary SET current_tier = ? "
-                    "WHERE peer_id = ?",
-                    (suggested, peer_id)
-                )
-                self.conn.commit()
+                cur.execute("BEGIN IMMEDIATE")
+                try:
+                    cur.execute(
+                        "UPDATE peer_reputation_summary SET current_tier = ? "
+                        "WHERE peer_id = ?",
+                        (suggested, peer_id)
+                    )
+                    self.conn.commit()
+                except Exception:
+                    self.conn.rollback()
+                    raise
 
                 changes.append({
                     "peer_id": peer_id,
