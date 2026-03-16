@@ -55,7 +55,9 @@ from handlers.task_handler import register_task_handlers
 from handlers.context_handler import register_context_handlers
 from handlers.workflow_handler import register_workflow_handlers
 from handlers.skill_handler import register_skill_handlers
+from handlers.session_handler import register_session_handlers
 from skill_registry import PeerSkillCache
+from session import SessionManager
 
 # ── Logging setup ─────────────────────────────────────────────────
 
@@ -133,6 +135,9 @@ class AgentFaxDaemon:
         # Phase 7: Workflow Orchestration
         self.workflow_manager = WorkflowManager(self.data_dir)
 
+        # S2: Session Manager
+        self.session_manager = SessionManager(self.data_dir)
+
         # Router context
         self.ctx = RouterContext(
             client=self.client,
@@ -143,6 +148,7 @@ class AgentFaxDaemon:
             reputation_manager=self.reputation_manager,
             context_manager=self.context_manager,
             workflow_manager=self.workflow_manager,
+            session_manager=self.session_manager,
         )
 
         # Register built-in handlers (ping/pong/discover/ack)
@@ -166,6 +172,11 @@ class AgentFaxDaemon:
         register_skill_handlers(
             self.router, self.executor, self.data_dir,
             peer_skill_cache=self.peer_skill_cache,
+        )
+
+        # Register session handlers (session_propose/accept/reject/close)
+        register_session_handlers(
+            self.router, self.session_manager, self.executor
         )
 
         # Register built-in skills (echo, reverse, word_count)
@@ -269,6 +280,7 @@ class AgentFaxDaemon:
             self.inbox_store.close()
             self.outbox_store.close()
             self.peer_skill_cache.close()
+            self.session_manager.close()
             self.reputation_manager.close()
             self.context_manager.close()
             self.workflow_manager.close()
@@ -296,6 +308,9 @@ class AgentFaxDaemon:
 
             # Cleanup expired context items
             self.context_manager.cleanup_expired()
+
+            # Expire stale sessions
+            self.session_manager.expire_stale_sessions()
 
         # ── Workflow step dispatch ────────────────────────────────
         # Check running workflows and dispatch ready steps

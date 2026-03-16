@@ -82,6 +82,7 @@ def register_task_handlers(router, task_manager, executor):
         sender = msg.get("sender_id", "unknown")
         sender_wallet = msg.get("_xmtp_sender_wallet")
         correlation_id = msg.get("correlation_id", "")
+        session_id = payload.get("session_id")  # S2: optional session binding
 
         logger.info(f"Task request from {sender}: skill={skill}, task_id={task_id}")
 
@@ -128,6 +129,46 @@ def register_task_handlers(router, task_manager, executor):
                 scope="routing",
             )
 
+        # ── Check 4: Session validation (if session_id present) ──
+        session_privacy_cap = None  # Will be used for context projection
+        if session_id and ctx.session_manager:
+            ok, err_code, err_msg = ctx.session_manager.validate_task_request(
+                session_id, skill, sender
+            )
+            if not ok:
+                logger.warning(f"Session check FAILED: {err_code} — {err_msg}")
+                return _make_error(
+                    task_id, skill, err_code, err_msg,
+                    retryable=False, scope="session",
+                )
+
+            # Enforce session agreed_trust_tier
+            session_data = ctx.session_manager.get_session(session_id)
+            if session_data and ctx.trust_manager:
+                from security import TrustTier
+                agreed_tier = session_data.get("agreed_trust_tier")
+                if agreed_tier is not None:
+                    peer_tier = ctx.trust_manager.get_trust_tier(sender)
+                    if peer_tier < agreed_tier:
+                        return _make_error(
+                            task_id, skill,
+                            "TRUST_TIER_DEGRADED",
+                            f"Peer trust {peer_tier} dropped below session "
+                            f"agreed tier {agreed_tier}",
+                            retryable=False, scope="authorization",
+                        )
+                # Save session privacy cap for context projection
+                session_privacy_cap = session_data.get("agreed_max_context_privacy")
+
+            # Atomic increment call counter
+            if not ctx.session_manager.increment_call_count(session_id):
+                return _make_error(
+                    task_id, skill,
+                    "CALL_LIMIT_EXCEEDED",
+                    f"Session {session_id} call limit reached",
+                    retryable=False, scope="session",
+                )
+
         # Record the task
         task_manager.receive_task(
             task_id=task_id,
@@ -160,14 +201,18 @@ def register_task_handlers(router, task_manager, executor):
                 logger.error(f"Failed to send task_ack: {e}")
 
         # Project relevant context for this task (Phase 6)
-        # Enforce max_context_privacy_tier from skill definition.
+        # Enforce min(peer trust, skill privacy cap, session privacy cap).
         task_context = None
         if ctx.context_manager and ctx.trust_manager:
+            privacy_tier_map = {"L1_PUBLIC": 1, "L2_TRUSTED": 2, "L3_PRIVATE": 3}
             peer_tier = ctx.trust_manager.get_trust_tier(sender)
             skill_def = executor.get_skill(skill)
             max_privacy = skill_def.max_context_privacy_tier if skill_def else "L1_PUBLIC"
-            # Cap effective tier: if skill says L1_PUBLIC, don't share L2 even for trusted peers
-            privacy_cap = {"L1_PUBLIC": 1, "L2_TRUSTED": 2, "L3_PRIVATE": 3}.get(max_privacy, 1)
+            privacy_cap = privacy_tier_map.get(max_privacy, 1)
+            # Also apply session privacy cap if present
+            if session_privacy_cap:
+                session_cap = privacy_tier_map.get(session_privacy_cap, 1)
+                privacy_cap = min(privacy_cap, session_cap)
             effective_tier = min(peer_tier, privacy_cap)
 
             task_context = ctx.context_manager.project_for_task(
@@ -184,18 +229,26 @@ def register_task_handlers(router, task_manager, executor):
         exec_input = input_data
         if task_context and isinstance(input_data, dict):
             exec_input = {**input_data, "_context": task_context}
-        exec_result = executor.execute(skill, exec_input)
+
+        try:
+            exec_result = executor.execute(skill, exec_input)
+        except Exception as e:
+            # Safety net: executor.execute() should not raise, but if it does,
+            # ensure session/task counters stay consistent.
+            logger.error(f"Executor crash for task {task_id}: {e}")
+            exec_result = {"success": False, "error": str(e)}
 
         if exec_result.get("success"):
             duration = exec_result.get("duration_ms", 0)
             task_manager.complete_task(task_id, result=exec_result.get("result"))
             logger.info(f"Task {task_id} completed: {duration:.0f}ms")
 
-            # Record reputation — successful task execution
             if ctx.reputation_manager:
                 ctx.reputation_manager.record_interaction(
                     sender, "task_completed", True, latency_ms=duration
                 )
+            if session_id and ctx.session_manager:
+                ctx.session_manager.task_completed(session_id)
 
             response = {
                 "type": "task_response",
@@ -205,6 +258,7 @@ def register_task_handlers(router, task_manager, executor):
                     "status": "completed",
                     "output": exec_result.get("result"),
                     "duration_ms": duration,
+                    "session_id": session_id,
                 },
             }
         else:
@@ -212,12 +266,13 @@ def register_task_handlers(router, task_manager, executor):
             task_manager.fail_task(task_id, error_msg)
             logger.error(f"Task {task_id} failed: {error_msg}")
 
-            # Record reputation — failed task execution
             if ctx.reputation_manager:
                 ctx.reputation_manager.record_interaction(
                     sender, "task_failed", False,
                     metadata={"error": error_msg}
                 )
+            if session_id and ctx.session_manager:
+                ctx.session_manager.task_failed(session_id)
 
             response = _make_error(
                 task_id, skill,

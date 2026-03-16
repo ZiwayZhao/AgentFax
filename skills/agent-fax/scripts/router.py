@@ -43,7 +43,8 @@ class RouterContext:
 
     def __init__(self, client, inbox_store=None, outbox_store=None, peer_manager=None,
                  trust_manager=None, reputation_manager=None,
-                 context_manager=None, workflow_manager=None):
+                 context_manager=None, workflow_manager=None,
+                 session_manager=None):
         self.client = client
         self.inbox_store = inbox_store
         self.outbox_store = outbox_store
@@ -52,6 +53,7 @@ class RouterContext:
         self.reputation_manager = reputation_manager
         self.context_manager = context_manager
         self.workflow_manager = workflow_manager
+        self.session_manager = session_manager
 
     def reply(self, original_msg: dict, msg_type: str, payload: dict) -> Optional[dict]:
         """Send a reply to the sender of the original message.
