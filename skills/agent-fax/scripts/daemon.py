@@ -163,12 +163,6 @@ class AgentFaxDaemon:
         # Register built-in skills (echo, reverse, word_count)
         register_builtin_skills(self.executor)
 
-        # Load previously installed custom skills
-        custom_dir = os.path.join(self.data_dir, "custom_skills")
-        loaded = self.executor.load_skills_from_dir(custom_dir)
-        if loaded:
-            self.logger.info(f"Loaded {loaded} custom skill(s)")
-
         # Stats
         self._start_time = None
         self._cycles = 0

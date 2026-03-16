@@ -1,125 +1,154 @@
 #!/usr/bin/env python3
 """
-AgentFax Skill Handler — remote skill installation and discovery.
+AgentFax Skill Handler — Skill Card discovery (Skill-as-API model).
+
+Code transfer is forbidden. Skills are exposed as API interfaces via
+Skill Cards — only input/output schemas are shared, never implementation.
 
 Message types:
-  skill_install  — push a skill (Python code) to a peer
-  skill_query    — ask a peer what skills they have
-  skill_list     — response listing available skills
+  skill_card_query  — ask a peer what skills they have (returns card summaries)
+  skill_card_list   — response listing Skill Card summaries
+  skill_card_get    — request a single Skill Card's full details
+  skill_card        — response with full Skill Card
+
+Legacy compatibility:
+  skill_query       — maps to skill_card_query
+  skill_list        — maps to skill_card_list
+  skill_install     — rejected with CODE_TRANSFER_FORBIDDEN
 """
 
 import logging
-import os
 
 logger = logging.getLogger("agentfax.handlers.skill")
 
 
 def register_skill_handlers(router, executor, data_dir: str):
-    """Register skill-related handlers with the router.
+    """Register skill-related handlers with the router."""
 
-    Args:
-        router: MessageRouter instance
-        executor: TaskExecutor instance
-        data_dir: AgentFax data directory (for persisting installed skills)
-    """
+    # ── Skill Card discovery ─────────────────────────────────
 
-    custom_skills_dir = os.path.join(data_dir, "custom_skills")
-
-    @router.handler("skill_install")
-    def handle_skill_install(msg, ctx):
-        """Receive and install a skill from a peer.
-
-        Expected payload:
-            name: str         — skill name
-            code: str         — Python source (must define handler(input_data))
-            description: str  — what the skill does
-            input_schema: dict (optional)
-            output_schema: dict (optional)
-        """
-        payload = msg.get("payload", {})
-        name = payload.get("name")
-        code = payload.get("code")
+    @router.handler("skill_card_query")
+    def handle_skill_card_query(msg, ctx):
+        """Return summaries of all available Skill Cards."""
         sender = msg.get("sender_id", "unknown")
+        payload = msg.get("payload", {})
+        tags_filter = payload.get("tags")
+        names_filter = payload.get("names")
 
-        if not name or not code:
-            logger.warning(f"skill_install from {sender}: missing name or code")
+        logger.info(f"skill_card_query from {sender}")
+
+        cards = []
+        for skill_dict in executor.list_skills():
+            # Apply filters
+            if names_filter and skill_dict["name"] not in names_filter:
+                continue
+            cards.append(skill_dict)
+
+        return {
+            "type": "skill_card_list",
+            "payload": {
+                "skills": cards,
+                "count": len(cards),
+            },
+        }
+
+    @router.handler("skill_card_list")
+    def handle_skill_card_list(msg, ctx):
+        """Handle a peer's Skill Card list response."""
+        payload = msg.get("payload", {})
+        sender = msg.get("sender_id", "unknown")
+        skills = payload.get("skills", [])
+        logger.info(
+            f"Skill card list from {sender}: {len(skills)} skills — "
+            + ", ".join(s.get("name", "?") for s in skills)
+        )
+
+        # Update peer capabilities (must pass skill objects, not bare names)
+        if ctx.peer_manager:
+            ctx.peer_manager.update_capabilities(
+                sender, capabilities={"skills": skills}
+            )
+
+        return None
+
+    @router.handler("skill_card_get")
+    def handle_skill_card_get(msg, ctx):
+        """Return full details for a specific Skill Card."""
+        payload = msg.get("payload", {})
+        sender = msg.get("sender_id", "unknown")
+        skill_name = payload.get("skill_name")
+
+        logger.info(f"skill_card_get from {sender}: {skill_name}")
+
+        skill_def = executor.get_skill(skill_name) if skill_name else None
+        if not skill_def:
             return {
-                "type": "skill_install_result",
+                "type": "task_error",
                 "payload": {
-                    "name": name or "?",
-                    "success": False,
-                    "error": "missing name or code",
+                    "error_code": "SKILL_NOT_FOUND",
+                    "error_message": f"No skill named '{skill_name}'",
+                    "retryable": False,
+                    "scope": "routing",
                 },
             }
 
-        logger.info(f"skill_install from {sender}: installing '{name}' ({len(code)} bytes)")
-
-        result = executor.install_from_code(
-            name=name,
-            code=code,
-            description=payload.get("description", f"Installed by {sender}"),
-            input_schema=payload.get("input_schema"),
-            output_schema=payload.get("output_schema"),
-            save_dir=custom_skills_dir,
-        )
-
-        if result["success"]:
-            logger.info(f"Skill '{name}' installed successfully from {sender}")
-        else:
-            logger.error(f"Skill '{name}' install failed: {result.get('error')}")
-
         return {
-            "type": "skill_install_result",
-            "payload": result,
+            "type": "skill_card",
+            "payload": {
+                "card": skill_def.to_dict(),
+            },
         }
 
-    @router.handler("skill_install_result")
-    def handle_skill_install_result(msg, ctx):
-        """Handle the result of a skill installation we requested."""
+    @router.handler("skill_card")
+    def handle_skill_card(msg, ctx):
+        """Handle a full Skill Card response from a peer."""
         payload = msg.get("payload", {})
-        name = payload.get("name", "?")
-        success = payload.get("success", False)
         sender = msg.get("sender_id", "unknown")
-
-        if success:
-            logger.info(f"Skill '{name}' installed on {sender} ✓")
-        else:
-            logger.error(f"Skill '{name}' install failed on {sender}: {payload.get('error')}")
+        card = payload.get("card", {})
+        logger.info(f"Skill card from {sender}: {card.get('name', '?')}")
         return None
+
+    # ── Legacy compatibility ─────────────────────────────────
 
     @router.handler("skill_query")
     def handle_skill_query(msg, ctx):
-        """Respond with our list of available skills."""
+        """Legacy: returns skill_list (old type name) for backwards compat."""
         sender = msg.get("sender_id", "unknown")
-        logger.info(f"skill_query from {sender}")
+        logger.info(f"skill_query (legacy) from {sender}")
+        cards = executor.list_skills()
         return {
             "type": "skill_list",
             "payload": {
-                "skills": executor.list_skills(),
-                "count": len(executor.skill_names),
+                "skills": cards,
+                "count": len(cards),
             },
         }
 
     @router.handler("skill_list")
     def handle_skill_list(msg, ctx):
-        """Handle a peer's skill list response."""
-        payload = msg.get("payload", {})
+        """Legacy: same processing as skill_card_list."""
+        return handle_skill_card_list(msg, ctx)
+
+    @router.handler("skill_install")
+    def handle_skill_install(msg, ctx):
+        """Reject remote code installation — code transfer is forbidden."""
         sender = msg.get("sender_id", "unknown")
-        skills = payload.get("skills", [])
-        logger.info(
-            f"Skill list from {sender}: {len(skills)} skills — "
-            + ", ".join(s.get("name", "?") for s in skills)
-        )
+        logger.warning(f"skill_install REJECTED from {sender}: code transfer forbidden")
+        return {
+            "type": "skill_install_result",
+            "payload": {
+                "name": msg.get("payload", {}).get("name", "?"),
+                "success": False,
+                "error_code": "CODE_TRANSFER_FORBIDDEN",
+                "error": "Remote code installation is not supported. "
+                         "Use skill_card_query to discover available skills.",
+            },
+        }
 
-        # Update peer capabilities
-        if ctx.peer_manager:
-            capabilities = [s.get("name") for s in skills if s.get("name")]
-            peer = ctx.peer_manager.get(sender)
-            if peer:
-                peer["capabilities"] = capabilities
-                ctx.peer_manager.save(sender, peer)
-                logger.info(f"Updated {sender} capabilities: {capabilities}")
-
+    @router.handler("skill_install_result")
+    def handle_skill_install_result(msg, ctx):
+        """Legacy no-op."""
         return None
 
-    logger.info("Registered skill handlers: skill_install, skill_query, skill_list")
+    logger.info("Registered skill handlers: skill_card_query/list/get/card, "
+                "skill_query (legacy), skill_install (rejected)")

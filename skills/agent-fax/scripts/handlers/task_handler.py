@@ -28,6 +28,48 @@ def register_task_handlers(router, task_manager, executor):
         executor: TaskExecutor instance
     """
 
+    # ── Unified error response builder ──────────────────────────
+
+    def _make_error(task_id, skill, error_code, error_message, retryable=False, scope="execution"):
+        """Build a standardized error response."""
+        return {
+            "type": "task_error",
+            "payload": {
+                "task_id": task_id,
+                "skill": skill,
+                "error_code": error_code,
+                "error_message": error_message,
+                "retryable": retryable,
+                "scope": scope,
+            },
+        }
+
+    # ── Dedup cache (sender+correlation_id → response) ──────
+    # Key is (sender, correlation_id) to prevent cross-sender leakage.
+    # TTL and size bounded to prevent memory exhaustion.
+
+    _dedup_cache = {}
+    _dedup_timestamps = {}
+    _DEDUP_TTL_SECONDS = 300
+    _DEDUP_MAX_ENTRIES = 1000
+
+    def _dedup_key(sender, correlation_id):
+        return f"{sender}:{correlation_id}"
+
+    def _dedup_cleanup():
+        """Evict expired entries and enforce size limit."""
+        now = time.time()
+        expired = [k for k, ts in _dedup_timestamps.items()
+                   if now - ts > _DEDUP_TTL_SECONDS]
+        for k in expired:
+            _dedup_cache.pop(k, None)
+            _dedup_timestamps.pop(k, None)
+        # If still over limit, evict oldest
+        while len(_dedup_cache) > _DEDUP_MAX_ENTRIES:
+            oldest_key = min(_dedup_timestamps, key=_dedup_timestamps.get)
+            _dedup_cache.pop(oldest_key, None)
+            _dedup_timestamps.pop(oldest_key, None)
+
     # ── Executor side: handle incoming task requests ───────────
 
     @router.handler("task_request")
@@ -39,20 +81,52 @@ def register_task_handlers(router, task_manager, executor):
         timeout = payload.get("timeout", 300)
         sender = msg.get("sender_id", "unknown")
         sender_wallet = msg.get("_xmtp_sender_wallet")
+        correlation_id = msg.get("correlation_id", "")
 
         logger.info(f"Task request from {sender}: skill={skill}, task_id={task_id}")
 
-        # Check if we have this skill
+        # ── Check 1: Trust — is this peer allowed to call? ──────
+        # Trust check BEFORE dedup to prevent auth bypass via cached responses.
+        if ctx.trust_manager:
+            from security import TrustTier
+            peer_tier = ctx.trust_manager.get_trust_tier(sender)
+
+            # Get skill's minimum trust requirement
+            skill_def = executor.get_skill(skill) if executor.has_skill(skill) else None
+            min_tier = skill_def.min_trust_tier if skill_def else 1
+
+            if peer_tier < min_tier:
+                logger.warning(
+                    f"Trust check FAILED: {sender} has tier {peer_tier} "
+                    f"({TrustTier(peer_tier).name}), skill '{skill}' requires {min_tier}"
+                )
+                return _make_error(
+                    task_id, skill,
+                    "TRUST_TIER_TOO_LOW",
+                    f"Requires trust tier {min_tier} ({TrustTier(min_tier).name}), "
+                    f"you have {peer_tier} ({TrustTier(peer_tier).name})",
+                    retryable=False,
+                    scope="authorization",
+                )
+
+        # ── Check 2: Idempotency — after trust, before execution ──
+        # Cleanup first so expired entries don't get returned.
+        _dedup_cleanup()
+        dedup_k = _dedup_key(sender, correlation_id) if correlation_id else None
+        if dedup_k and dedup_k in _dedup_cache:
+            logger.info(f"Duplicate request from {sender}, returning cached response")
+            return _dedup_cache[dedup_k]
+
+        # ── Check 3: Skill exists ──────────────────────────────
         if not executor.has_skill(skill):
             logger.warning(f"Unknown skill requested: {skill}")
-            return {
-                "type": "task_reject",
-                "payload": {
-                    "task_id": task_id,
-                    "reason": f"Unknown skill: {skill}",
-                    "available_skills": executor.skill_names,
-                },
-            }
+            return _make_error(
+                task_id, skill,
+                "SKILL_NOT_FOUND",
+                f"Unknown skill: {skill}. Available: {executor.skill_names}",
+                retryable=False,
+                scope="routing",
+            )
 
         # Record the task
         task_manager.receive_task(
@@ -61,7 +135,7 @@ def register_task_handlers(router, task_manager, executor):
             input_data=input_data or {},
             peer_wallet=sender_wallet or "",
             peer_name=sender,
-            correlation_id=msg.get("correlation_id"),
+            correlation_id=correlation_id,
             timeout_seconds=timeout,
         )
 
@@ -80,21 +154,29 @@ def register_task_handlers(router, task_manager, executor):
                         "status": "accepted",
                         "estimated_duration": "unknown",
                     },
-                    correlation_id=msg.get("correlation_id"),
+                    correlation_id=correlation_id,
                 )
             except Exception as e:
                 logger.error(f"Failed to send task_ack: {e}")
 
         # Project relevant context for this task (Phase 6)
+        # Enforce max_context_privacy_tier from skill definition.
         task_context = None
         if ctx.context_manager and ctx.trust_manager:
             peer_tier = ctx.trust_manager.get_trust_tier(sender)
+            skill_def = executor.get_skill(skill)
+            max_privacy = skill_def.max_context_privacy_tier if skill_def else "L1_PUBLIC"
+            # Cap effective tier: if skill says L1_PUBLIC, don't share L2 even for trusted peers
+            privacy_cap = {"L1_PUBLIC": 1, "L2_TRUSTED": 2, "L3_PRIVATE": 3}.get(max_privacy, 1)
+            effective_tier = min(peer_tier, privacy_cap)
+
             task_context = ctx.context_manager.project_for_task(
-                skill, peer_tier
+                skill, effective_tier
             )
             if task_context:
                 logger.debug(
-                    f"Projected {len(task_context)} context items for task {task_id}"
+                    f"Projected {len(task_context)} context items for task {task_id} "
+                    f"(max_privacy={max_privacy})"
                 )
 
         # Execute the skill (pass context as part of input if available)
@@ -115,7 +197,7 @@ def register_task_handlers(router, task_manager, executor):
                     sender, "task_completed", True, latency_ms=duration
                 )
 
-            return {
+            response = {
                 "type": "task_response",
                 "payload": {
                     "task_id": task_id,
@@ -137,15 +219,20 @@ def register_task_handlers(router, task_manager, executor):
                     metadata={"error": error_msg}
                 )
 
-            return {
-                "type": "task_error",
-                "payload": {
-                    "task_id": task_id,
-                    "skill": skill,
-                    "status": "failed",
-                    "error": error_msg,
-                },
-            }
+            response = _make_error(
+                task_id, skill,
+                "EXECUTION_FAILED",
+                error_msg,
+                retryable=False,
+                scope="execution",
+            )
+
+        # Cache response for dedup (keyed by sender+correlation_id)
+        if dedup_k:
+            _dedup_cache[dedup_k] = response
+            _dedup_timestamps[dedup_k] = time.time()
+
+        return response
 
     # ── Requester side: handle task responses ──────────────────
 
@@ -220,10 +307,18 @@ def register_task_handlers(router, task_manager, executor):
     def handle_task_error(msg, ctx):
         payload = msg.get("payload", {})
         task_id = payload.get("task_id")
-        error = payload.get("error", "unknown")
+        # Support both new format (error_code+error_message) and old (error)
+        error_code = payload.get("error_code", "")
+        error_message = payload.get("error_message", "")
+        error = error_message or payload.get("error", "unknown")
+        retryable = payload.get("retryable", False)
+        scope = payload.get("scope", "")
         sender = msg.get("sender_id", "unknown")
 
-        logger.error(f"Task {task_id} error from {sender}: {error}")
+        logger.error(
+            f"Task {task_id} error from {sender}: "
+            f"[{error_code}] {error} (retryable={retryable}, scope={scope})"
+        )
 
         task = task_manager.get_by_correlation(msg.get("correlation_id", ""))
         if task:

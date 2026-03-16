@@ -42,12 +42,16 @@ class SkillDefinition:
         description: str = "",
         input_schema: dict = None,
         output_schema: dict = None,
+        min_trust_tier: int = 1,
+        max_context_privacy_tier: str = "L1_PUBLIC",
     ):
         self.name = name
         self.func = func
         self.description = description or f"Skill: {name}"
         self.input_schema = input_schema or {}
         self.output_schema = output_schema or {}
+        self.min_trust_tier = min_trust_tier
+        self.max_context_privacy_tier = max_context_privacy_tier
 
     def to_dict(self) -> dict:
         return {
@@ -55,6 +59,8 @@ class SkillDefinition:
             "description": self.description,
             "input_schema": self.input_schema,
             "output_schema": self.output_schema,
+            "min_trust_tier": self.min_trust_tier,
+            "max_context_privacy_tier": self.max_context_privacy_tier,
         }
 
 
@@ -75,6 +81,8 @@ class TaskExecutor:
         description: str = "",
         input_schema: dict = None,
         output_schema: dict = None,
+        min_trust_tier: int = 1,
+        max_context_privacy_tier: str = "L1_PUBLIC",
     ):
         """Decorator to register a skill function.
 
@@ -92,6 +100,8 @@ class TaskExecutor:
                 description=description,
                 input_schema=input_schema,
                 output_schema=output_schema,
+                min_trust_tier=min_trust_tier,
+                max_context_privacy_tier=max_context_privacy_tier,
             )
             self._skills[name] = skill_def
             logger.info(f"Registered skill: {name}")
@@ -105,6 +115,8 @@ class TaskExecutor:
         description: str = "",
         input_schema: dict = None,
         output_schema: dict = None,
+        min_trust_tier: int = 1,
+        max_context_privacy_tier: str = "L1_PUBLIC",
     ):
         """Register a skill function (non-decorator version)."""
         skill_def = SkillDefinition(
@@ -112,6 +124,8 @@ class TaskExecutor:
             description=description,
             input_schema=input_schema,
             output_schema=output_schema,
+            min_trust_tier=min_trust_tier,
+            max_context_privacy_tier=max_context_privacy_tier,
         )
         self._skills[name] = skill_def
         logger.info(f"Registered skill: {name}")
@@ -183,124 +197,9 @@ class TaskExecutor:
         """List registered skill names."""
         return list(self._skills.keys())
 
-    def install_from_code(
-        self,
-        name: str,
-        code: str,
-        description: str = "",
-        input_schema: dict = None,
-        output_schema: dict = None,
-        save_dir: str = None,
-    ) -> dict:
-        """Install a skill from Python source code.
-
-        The code must define a function called `handler(input_data)`.
-        It is compiled, executed in a restricted namespace, and
-        the `handler` function is registered as the skill.
-
-        Args:
-            name: Skill name
-            code: Python source code with handler(input_data) function
-            description: Human-readable description
-            save_dir: If set, persist the .py file to this directory
-
-        Returns:
-            dict with success, name, error (if failed)
-        """
-        logger.info(f"Installing skill from code: {name}")
-
-        # Compile & exec in isolated namespace
-        namespace: Dict[str, Any] = {}
-        try:
-            compiled = compile(code, f"<skill:{name}>", "exec")
-            exec(compiled, namespace)
-        except Exception as e:
-            logger.error(f"Skill '{name}' compile error: {e}")
-            return {"success": False, "name": name, "error": f"compile: {e}"}
-
-        handler = namespace.get("handler")
-        if not callable(handler):
-            return {
-                "success": False,
-                "name": name,
-                "error": "code must define a callable `handler(input_data)`",
-            }
-
-        # Register
-        self.register_skill(
-            name=name,
-            func=handler,
-            description=description,
-            input_schema=input_schema,
-            output_schema=output_schema,
-        )
-
-        # Persist to disk so it survives daemon restart
-        if save_dir:
-            try:
-                os.makedirs(save_dir, exist_ok=True)
-                meta = {
-                    "name": name,
-                    "description": description,
-                    "input_schema": input_schema or {},
-                    "output_schema": output_schema or {},
-                }
-                skill_path = os.path.join(save_dir, f"{name}.py")
-                with open(skill_path, "w") as f:
-                    f.write(f"# skill_meta: {json.dumps(meta)}\n")
-                    f.write(code)
-                logger.info(f"Skill '{name}' saved to {skill_path}")
-            except Exception as e:
-                logger.warning(f"Failed to persist skill '{name}': {e}")
-
-        return {"success": True, "name": name}
-
-    def load_skills_from_dir(self, skills_dir: str) -> int:
-        """Load all .py skills from a directory (on daemon startup).
-
-        Each file must contain `handler(input_data)` and optionally
-        a first-line comment `# skill_meta: {...}`.
-
-        Returns number of skills loaded.
-        """
-        if not os.path.isdir(skills_dir):
-            return 0
-
-        loaded = 0
-        for fname in sorted(os.listdir(skills_dir)):
-            if not fname.endswith(".py"):
-                continue
-            name = fname[:-3]
-            fpath = os.path.join(skills_dir, fname)
-            try:
-                code = open(fpath).read()
-
-                # Parse optional metadata from first line
-                meta = {}
-                first_line = code.split("\n", 1)[0]
-                if first_line.startswith("# skill_meta:"):
-                    try:
-                        meta = json.loads(first_line[len("# skill_meta:"):].strip())
-                    except json.JSONDecodeError:
-                        pass
-
-                result = self.install_from_code(
-                    name=name,
-                    code=code,
-                    description=meta.get("description", ""),
-                    input_schema=meta.get("input_schema"),
-                    output_schema=meta.get("output_schema"),
-                )
-                if result["success"]:
-                    loaded += 1
-                else:
-                    logger.warning(f"Failed to load {fname}: {result.get('error')}")
-            except Exception as e:
-                logger.warning(f"Failed to read {fname}: {e}")
-
-        if loaded:
-            logger.info(f"Loaded {loaded} custom skill(s) from {skills_dir}")
-        return loaded
+    def get_skill(self, name: str) -> Optional[SkillDefinition]:
+        """Get a skill definition by name."""
+        return self._skills.get(name)
 
     @property
     def stats(self) -> dict:
