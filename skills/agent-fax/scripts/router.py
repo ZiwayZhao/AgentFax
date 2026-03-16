@@ -44,7 +44,7 @@ class RouterContext:
     def __init__(self, client, inbox_store=None, outbox_store=None, peer_manager=None,
                  trust_manager=None, reputation_manager=None,
                  context_manager=None, workflow_manager=None,
-                 session_manager=None):
+                 session_manager=None, metering_manager=None):
         self.client = client
         self.inbox_store = inbox_store
         self.outbox_store = outbox_store
@@ -54,11 +54,13 @@ class RouterContext:
         self.context_manager = context_manager
         self.workflow_manager = workflow_manager
         self.session_manager = session_manager
+        self.metering_manager = metering_manager
 
     def reply(self, original_msg: dict, msg_type: str, payload: dict) -> Optional[dict]:
         """Send a reply to the sender of the original message.
 
         Automatically sets correlation_id from the original message.
+        Falls back to outbox retry queue on send failure.
         """
         sender_wallet = original_msg.get("_xmtp_sender_wallet")
         if not sender_wallet:
@@ -66,23 +68,34 @@ class RouterContext:
             return None
 
         corr_id = original_msg.get("correlation_id")
-        result = self.client.send(
-            to_wallet=sender_wallet,
-            msg_type=msg_type,
-            payload=payload,
-            correlation_id=corr_id,
-        )
-
-        if self.outbox_store:
-            self.outbox_store.record(
-                recipient_wallet=sender_wallet,
+        try:
+            result = self.client.send(
+                to_wallet=sender_wallet,
                 msg_type=msg_type,
                 payload=payload,
-                bridge_response=result,
                 correlation_id=corr_id,
             )
 
-        return result
+            if self.outbox_store:
+                self.outbox_store.record(
+                    recipient_wallet=sender_wallet,
+                    msg_type=msg_type,
+                    payload=payload,
+                    bridge_response=result,
+                    correlation_id=corr_id,
+                )
+
+            return result
+        except Exception as e:
+            logger.error(f"Reply send failed [{msg_type}]: {e}")
+            if self.outbox_store:
+                self.outbox_store.record_pending(
+                    recipient_wallet=sender_wallet,
+                    msg_type=msg_type,
+                    payload=payload,
+                    correlation_id=corr_id,
+                )
+            return None
 
 
 class MessageRouter:

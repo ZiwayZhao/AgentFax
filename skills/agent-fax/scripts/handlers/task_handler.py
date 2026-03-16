@@ -12,6 +12,7 @@ When a task_request arrives, it:
 On the requester side, handles incoming task_ack, task_response, task_progress.
 """
 
+import json
 import logging
 import time
 from typing import Optional
@@ -169,8 +170,14 @@ def register_task_handlers(router, task_manager, executor):
                     retryable=False, scope="session",
                 )
 
-        # Record the task
-        task_manager.receive_task(
+        # Extract skill version for metering
+        skill_version = payload.get("skill_version")
+        skill_def = executor.get_skill(skill) if executor.has_skill(skill) else None
+        if not skill_version and skill_def:
+            skill_version = getattr(skill_def, "version", "1.0.0")
+
+        # Record the task — returns False if task_id already exists (persistent dedup)
+        is_new = task_manager.receive_task(
             task_id=task_id,
             skill=skill,
             input_data=input_data or {},
@@ -179,26 +186,57 @@ def register_task_handlers(router, task_manager, executor):
             correlation_id=correlation_id,
             timeout_seconds=timeout,
         )
+        if not is_new:
+            # Persistent duplicate: task_id already in DB (dedup cache expired but
+            # task was already processed). Return existing result if completed.
+            existing = task_manager.get_task(task_id)
+            if existing and existing.get("state") == "completed":
+                logger.info(f"Persistent duplicate {task_id}, returning stored result")
+                return {
+                    "type": "task_response",
+                    "payload": {
+                        "task_id": task_id,
+                        "skill": skill,
+                        "status": "completed",
+                        "output": existing.get("output_data"),
+                        "duration_ms": existing.get("duration_ms", 0),
+                        "session_id": session_id,
+                    },
+                }
+            elif existing and existing.get("state") == "failed":
+                logger.info(f"Persistent duplicate {task_id}, returning stored error")
+                return _make_error(
+                    task_id, skill,
+                    "EXECUTION_FAILED",
+                    existing.get("error_message", "unknown"),
+                    retryable=False, scope="execution",
+                )
+            else:
+                # Task exists but still in progress — return ack
+                logger.info(f"Persistent duplicate {task_id}, task still in flight")
+                return {
+                    "type": "task_ack",
+                    "payload": {
+                        "task_id": task_id,
+                        "skill": skill,
+                        "status": "in_progress",
+                    },
+                }
+
+        # Link session to task record
+        if session_id:
+            task_manager.set_session_id(task_id, session_id)
 
         # Send ack
         task_manager.accept_task(task_id)
 
-        # Send ack message back
-        if sender_wallet:
-            try:
-                ctx.client.send(
-                    to_wallet=sender_wallet,
-                    msg_type="task_ack",
-                    payload={
-                        "task_id": task_id,
-                        "skill": skill,
-                        "status": "accepted",
-                        "estimated_duration": "unknown",
-                    },
-                    correlation_id=correlation_id,
-                )
-            except Exception as e:
-                logger.error(f"Failed to send task_ack: {e}")
+        # Send ack message back (via ctx.reply for retry-on-failure support)
+        ctx.reply(msg, "task_ack", {
+            "task_id": task_id,
+            "skill": skill,
+            "status": "accepted",
+            "estimated_duration": "unknown",
+        })
 
         # Project relevant context for this task (Phase 6)
         # Enforce min(peer trust, skill privacy cap, session privacy cap).
@@ -238,9 +276,13 @@ def register_task_handlers(router, task_manager, executor):
             logger.error(f"Executor crash for task {task_id}: {e}")
             exec_result = {"success": False, "error": str(e)}
 
+        # Compute input size for metering
+        input_size = len(json.dumps(input_data or {}).encode())
+
         if exec_result.get("success"):
             duration = exec_result.get("duration_ms", 0)
-            task_manager.complete_task(task_id, result=exec_result.get("result"))
+            result_data = exec_result.get("result")
+            task_manager.complete_task(task_id, result=result_data)
             logger.info(f"Task {task_id} completed: {duration:.0f}ms")
 
             if ctx.reputation_manager:
@@ -250,16 +292,49 @@ def register_task_handlers(router, task_manager, executor):
             if session_id and ctx.session_manager:
                 ctx.session_manager.task_completed(session_id)
 
+            # S3: Create usage receipt (with compensation on failure)
+            output_size = len(json.dumps(result_data or {}).encode())
+            receipt_id = None
+            usage_info = None
+            if ctx.metering_manager:
+                provider_id = ctx.client._sender_id if ctx.client else "unknown"
+                try:
+                    receipt_id = ctx.metering_manager.create_receipt(
+                        task_id=task_id,
+                        caller=sender,
+                        provider=provider_id,
+                        skill_name=skill,
+                        status="completed",
+                        session_id=session_id,
+                        skill_version=skill_version,
+                        duration_ms=int(duration),
+                        input_size_bytes=input_size,
+                        output_size_bytes=output_size,
+                    )
+                    task_manager.set_receipt_id(task_id, receipt_id)
+                    usage_info = {
+                        "receipt_id": receipt_id,
+                        "duration_ms": int(duration),
+                        "input_size_bytes": input_size,
+                        "output_size_bytes": output_size,
+                    }
+                except Exception as e:
+                    logger.error(f"Metering failed for task {task_id}: {e}")
+
+            response_payload = {
+                "task_id": task_id,
+                "skill": skill,
+                "status": "completed",
+                "output": result_data,
+                "duration_ms": duration,
+                "session_id": session_id,
+            }
+            if usage_info:
+                response_payload["usage"] = usage_info
+
             response = {
                 "type": "task_response",
-                "payload": {
-                    "task_id": task_id,
-                    "skill": skill,
-                    "status": "completed",
-                    "output": exec_result.get("result"),
-                    "duration_ms": duration,
-                    "session_id": session_id,
-                },
+                "payload": response_payload,
             }
         else:
             error_msg = exec_result.get("error", "unknown error")
@@ -273,6 +348,24 @@ def register_task_handlers(router, task_manager, executor):
                 )
             if session_id and ctx.session_manager:
                 ctx.session_manager.task_failed(session_id)
+
+            # S3: Create usage receipt for failed task too
+            if ctx.metering_manager:
+                provider_id = ctx.client._sender_id if ctx.client else "unknown"
+                try:
+                    receipt_id = ctx.metering_manager.create_receipt(
+                        task_id=task_id,
+                        caller=sender,
+                        provider=provider_id,
+                        skill_name=skill,
+                        status="failed",
+                        session_id=session_id,
+                        skill_version=skill_version,
+                        input_size_bytes=input_size,
+                    )
+                    task_manager.set_receipt_id(task_id, receipt_id)
+                except Exception as e:
+                    logger.error(f"Metering failed for task {task_id}: {e}")
 
             response = _make_error(
                 task_id, skill,

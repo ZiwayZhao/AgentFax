@@ -58,6 +58,7 @@ from handlers.skill_handler import register_skill_handlers
 from handlers.session_handler import register_session_handlers
 from skill_registry import PeerSkillCache
 from session import SessionManager
+from metering import MeteringManager
 
 # ── Logging setup ─────────────────────────────────────────────────
 
@@ -138,6 +139,9 @@ class AgentFaxDaemon:
         # S2: Session Manager
         self.session_manager = SessionManager(self.data_dir)
 
+        # S3: Metering Manager
+        self.metering_manager = MeteringManager(self.data_dir)
+
         # Router context
         self.ctx = RouterContext(
             client=self.client,
@@ -149,6 +153,7 @@ class AgentFaxDaemon:
             context_manager=self.context_manager,
             workflow_manager=self.workflow_manager,
             session_manager=self.session_manager,
+            metering_manager=self.metering_manager,
         )
 
         # Register built-in handlers (ping/pong/discover/ack)
@@ -218,18 +223,27 @@ class AgentFaxDaemon:
         if msg.get("type") in ("ack", "pong", "error"):
             return
 
+        ack_payload = {
+            "correlation_id": corr_id,
+            "received_at": datetime.now(timezone.utc).isoformat(),
+        }
+        ack_corr = f"ack_{int(time.time())}"
+
         try:
             self.client.send(
                 to_wallet=sender_wallet,
                 msg_type="ack",
-                payload={
-                    "correlation_id": corr_id,
-                    "received_at": datetime.now(timezone.utc).isoformat(),
-                },
-                correlation_id=f"ack_{int(time.time())}",
+                payload=ack_payload,
+                correlation_id=ack_corr,
             )
         except Exception as e:
-            self.logger.debug(f"Failed to send ack: {e}")
+            self.logger.debug(f"Failed to send ack, queuing for retry: {e}")
+            self.outbox_store.record_pending(
+                recipient_wallet=sender_wallet,
+                msg_type="ack",
+                payload=ack_payload,
+                correlation_id=ack_corr,
+            )
 
     def run(self):
         """Main daemon loop — poll, store, route, ack."""
@@ -281,6 +295,7 @@ class AgentFaxDaemon:
             self.outbox_store.close()
             self.peer_skill_cache.close()
             self.session_manager.close()
+            self.metering_manager.close()
             self.reputation_manager.close()
             self.context_manager.close()
             self.workflow_manager.close()
@@ -311,6 +326,16 @@ class AgentFaxDaemon:
 
             # Expire stale sessions
             self.session_manager.expire_stale_sessions()
+
+        # ── Outbox retry — resend pending messages ────────────────
+        try:
+            # Recover stale retrying rows (e.g. from previous crash)
+            recovered = self.outbox_store.recover_stale_retrying(stale_seconds=60)
+            if recovered:
+                self.logger.info(f"Recovered {recovered} stale retrying messages")
+            self._retry_pending_sends()
+        except Exception as e:
+            self.logger.error(f"Outbox retry error: {e}")
 
         # ── Workflow step dispatch ────────────────────────────────
         # Check running workflows and dispatch ready steps
@@ -355,6 +380,29 @@ class AgentFaxDaemon:
                 self.logger.error(f"Dispatch error: {e}")
                 if msg_id:
                     self.inbox_store.mark_status(msg_id, "failed")
+
+    def _retry_pending_sends(self):
+        """Retry messages that failed to send."""
+        retryable = self.outbox_store.get_retryable(limit=5)
+        for msg in retryable:
+            row_id = msg["id"]
+            try:
+                result = self.client.send(
+                    to_wallet=msg["recipient_wallet"],
+                    msg_type=msg["msg_type"],
+                    payload=msg["payload"] if isinstance(msg["payload"], dict)
+                            else {},
+                    correlation_id=msg.get("correlation_id"),
+                )
+                self.outbox_store.mark_retry_sent(row_id, result)
+                self.logger.info(
+                    f"Retry success: {msg['msg_type']} → {msg['recipient_wallet'][:10]}..."
+                )
+            except Exception as e:
+                self.outbox_store.mark_retry_failed(row_id, str(e))
+                self.logger.warning(
+                    f"Retry failed: {msg['msg_type']} → {msg['recipient_wallet'][:10]}...: {e}"
+                )
 
     def _dispatch_workflow_steps(self):
         """Check running workflows and dispatch ready steps."""

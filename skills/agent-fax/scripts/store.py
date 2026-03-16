@@ -15,11 +15,16 @@ Usage:
 """
 
 import json
+import logging
 import os
 import sqlite3
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+
+logger = logging.getLogger("agentfax.store")
 
 
 class InboxStore:
@@ -221,15 +226,35 @@ class OutboxStore:
                 conversation_id TEXT,
                 sent_at TEXT,
                 status TEXT DEFAULT 'sent',
-                acked_at TEXT
+                acked_at TEXT,
+                retry_count INTEGER DEFAULT 0,
+                max_retries INTEGER DEFAULT 3,
+                next_retry_at TEXT,
+                last_error TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_sent_status
                 ON sent_messages(status);
             CREATE INDEX IF NOT EXISTS idx_sent_correlation
                 ON sent_messages(correlation_id);
+            CREATE INDEX IF NOT EXISTS idx_sent_retry
+                ON sent_messages(next_retry_at);
         """)
         self.conn.commit()
+        self._migrate_retry_columns()
+
+    def _migrate_retry_columns(self):
+        """Add retry columns to existing databases (idempotent)."""
+        try:
+            self.conn.execute("SELECT retry_count FROM sent_messages LIMIT 1")
+        except sqlite3.OperationalError:
+            self.conn.executescript("""
+                ALTER TABLE sent_messages ADD COLUMN retry_count INTEGER DEFAULT 0;
+                ALTER TABLE sent_messages ADD COLUMN max_retries INTEGER DEFAULT 3;
+                ALTER TABLE sent_messages ADD COLUMN next_retry_at TEXT;
+                ALTER TABLE sent_messages ADD COLUMN last_error TEXT;
+            """)
+            self.conn.commit()
 
     def record(
         self,
@@ -264,15 +289,185 @@ class OutboxStore:
         ))
         self.conn.commit()
 
+    def record_pending(
+        self,
+        recipient_wallet: str,
+        msg_type: str,
+        payload: dict,
+        correlation_id: str = None,
+        max_retries: int = 3,
+    ) -> int:
+        """Record a message that failed to send, queued for retry.
+
+        Returns:
+            Row ID of the pending message.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        # First retry in 5 seconds
+        next_retry = datetime.fromtimestamp(
+            time.time() + 5, tz=timezone.utc
+        ).isoformat()
+
+        cursor = self.conn.execute("""
+            INSERT INTO sent_messages
+                (recipient_wallet, msg_type, payload, correlation_id,
+                 sent_at, status, retry_count, max_retries, next_retry_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+        """, (
+            recipient_wallet,
+            msg_type,
+            json.dumps(payload),
+            correlation_id,
+            now,
+            max_retries,
+            next_retry,
+        ))
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_retryable(self, limit: int = 10) -> List[dict]:
+        """Atomically claim messages ready for retry.
+
+        Uses a single UPDATE to transition pending→retrying and then
+        fetches the affected rows. SQLite's single-writer lock ensures
+        concurrent callers cannot both claim the same rows.
+        Returns claimed messages.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Generate a unique claim token for this batch
+        claim_token = f"claim_{uuid.uuid4().hex[:12]}"
+
+        # Single atomic UPDATE: claim rows by appending a unique token to last_error
+        # so we can identify our claimed rows in the follow-up SELECT.
+        self.conn.execute(
+            "UPDATE sent_messages SET status = 'retrying', "
+            "last_error = COALESCE(last_error, '') || ? "
+            "WHERE id IN ("
+            "  SELECT id FROM sent_messages "
+            "  WHERE status = 'pending' AND next_retry_at <= ? "
+            "  ORDER BY next_retry_at ASC LIMIT ?"
+            ")",
+            (claim_token, now, limit),
+        )
+        self.conn.commit()
+
+        # Fetch rows we just claimed (identifiable by our claim token)
+        rows = self.conn.execute(
+            "SELECT * FROM sent_messages "
+            "WHERE status = 'retrying' AND last_error LIKE ? "
+            "ORDER BY next_retry_at ASC LIMIT ?",
+            (f"%{claim_token}%", limit),
+        ).fetchall()
+
+        # Clean up the claim token from last_error
+        for row in rows:
+            clean_error = (row["last_error"] or "").replace(claim_token, "")
+            self.conn.execute(
+                "UPDATE sent_messages SET last_error = ? WHERE id = ?",
+                (clean_error if clean_error else None, row["id"]),
+            )
+        self.conn.commit()
+
+        results = []
+        for row in rows:
+            d = dict(row)
+            # Clean the claim token from the returned dict too
+            if d.get("last_error"):
+                d["last_error"] = d["last_error"].replace(claim_token, "") or None
+            if d.get("payload"):
+                try:
+                    d["payload"] = json.loads(d["payload"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            results.append(d)
+        return results
+
+    def mark_retry_sent(self, row_id: int, bridge_response: dict):
+        """Mark a retried message as successfully sent.
+
+        Only updates if current status is 'retrying' (prevents overwriting acked).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            "UPDATE sent_messages SET status = 'sent', "
+            "message_id = ?, conversation_id = ?, sent_at = ? "
+            "WHERE id = ? AND status = 'retrying'",
+            (
+                bridge_response.get("messageId"),
+                bridge_response.get("conversationId"),
+                now,
+                row_id,
+            ),
+        )
+        self.conn.commit()
+
+    def mark_retry_failed(self, row_id: int, error: str):
+        """Record a retry failure. Exponential backoff or give up.
+
+        Only updates if current status is 'retrying' (prevents overwriting acked/sent).
+        """
+        row = self.conn.execute(
+            "SELECT retry_count, max_retries, status FROM sent_messages WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+        if not row or row["status"] != "retrying":
+            return
+
+        new_count = (row["retry_count"] or 0) + 1
+        max_retries = row["max_retries"] or 3
+
+        if new_count >= max_retries:
+            # Give up
+            self.conn.execute(
+                "UPDATE sent_messages SET status = 'failed', "
+                "retry_count = ?, last_error = ? "
+                "WHERE id = ? AND status = 'retrying'",
+                (new_count, error, row_id),
+            )
+        else:
+            # Exponential backoff: 5s, 15s, 45s, ...
+            delay = 5 * (3 ** new_count)
+            next_retry = datetime.fromtimestamp(
+                time.time() + delay, tz=timezone.utc
+            ).isoformat()
+            self.conn.execute(
+                "UPDATE sent_messages SET status = 'pending', retry_count = ?, "
+                "next_retry_at = ?, last_error = ? "
+                "WHERE id = ? AND status = 'retrying'",
+                (new_count, next_retry, error, row_id),
+            )
+        self.conn.commit()
+
     def mark_acked(self, correlation_id: str):
-        """Mark a sent message as acknowledged."""
+        """Mark a sent message as acknowledged.
+
+        Ack supersedes any current status (sent, pending, retrying).
+        """
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             "UPDATE sent_messages SET status = 'acked', acked_at = ? "
-            "WHERE correlation_id = ? AND status = 'sent'",
+            "WHERE correlation_id = ? AND status IN ('sent', 'pending', 'retrying')",
             (now, correlation_id),
         )
         self.conn.commit()
+
+    def recover_stale_retrying(self, stale_seconds: int = 60) -> int:
+        """Recover rows stuck in 'retrying' state (e.g. worker crash).
+
+        Transitions retrying → pending if they've been retrying longer
+        than stale_seconds. Returns count recovered.
+        """
+        cutoff = datetime.fromtimestamp(
+            time.time() - stale_seconds, tz=timezone.utc
+        ).isoformat()
+        cursor = self.conn.execute(
+            "UPDATE sent_messages SET status = 'pending' "
+            "WHERE status = 'retrying' AND sent_at <= ?",
+            (cutoff,),
+        )
+        self.conn.commit()
+        return cursor.rowcount
 
     def query(self, status: str = None, limit: int = 50) -> List[dict]:
         """Query sent messages."""

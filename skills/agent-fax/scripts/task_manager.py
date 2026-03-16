@@ -75,7 +75,10 @@ class TaskManager:
                 acked_at TEXT,
                 started_at TEXT,
                 completed_at TEXT,
-                duration_ms REAL
+                duration_ms REAL,
+                session_id TEXT,
+                skill_version TEXT,
+                receipt_id TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_tasks_state
@@ -84,7 +87,41 @@ class TaskManager:
                 ON tasks(role);
             CREATE INDEX IF NOT EXISTS idx_tasks_correlation
                 ON tasks(correlation_id);
+            CREATE INDEX IF NOT EXISTS idx_tasks_session
+                ON tasks(session_id);
         """)
+        self.conn.commit()
+        self._migrate_s3_columns()
+
+    def _migrate_s3_columns(self):
+        """Add S3 columns to existing databases (idempotent)."""
+        for col, col_type in [
+            ("session_id", "TEXT"),
+            ("skill_version", "TEXT"),
+            ("receipt_id", "TEXT"),
+        ]:
+            try:
+                self.conn.execute(f"SELECT {col} FROM tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                self.conn.execute(
+                    f"ALTER TABLE tasks ADD COLUMN {col} {col_type}"
+                )
+                self.conn.commit()
+
+    def set_receipt_id(self, task_id: str, receipt_id: str):
+        """Link a usage receipt to a task."""
+        self.conn.execute(
+            "UPDATE tasks SET receipt_id = ? WHERE task_id = ?",
+            (receipt_id, task_id),
+        )
+        self.conn.commit()
+
+    def set_session_id(self, task_id: str, session_id: str):
+        """Set the session_id for a task."""
+        self.conn.execute(
+            "UPDATE tasks SET session_id = ? WHERE task_id = ?",
+            (session_id, task_id),
+        )
         self.conn.commit()
 
     # ── Task creation (requester side) ─────────────────────────
@@ -145,8 +182,12 @@ class TaskManager:
         peer_name: str = None,
         correlation_id: str = None,
         timeout_seconds: int = 300,
-    ):
-        """Record an incoming task request (executor side)."""
+    ) -> bool:
+        """Record an incoming task request (executor side).
+
+        Returns:
+            True if this is a new task, False if duplicate (already exists).
+        """
         now = datetime.now(timezone.utc).isoformat()
 
         # Check for duplicate
@@ -154,7 +195,7 @@ class TaskManager:
             "SELECT task_id FROM tasks WHERE task_id = ?", (task_id,)
         ).fetchone()
         if existing:
-            return
+            return False
 
         self.conn.execute("""
             INSERT INTO tasks
@@ -167,6 +208,7 @@ class TaskManager:
             correlation_id, timeout_seconds, now,
         ))
         self.conn.commit()
+        return True
 
     def accept_task(self, task_id: str):
         """Accept a task (executor side) — send ack."""
