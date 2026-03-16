@@ -54,6 +54,7 @@ from handlers.builtin import register_builtin_handlers
 from handlers.task_handler import register_task_handlers
 from handlers.context_handler import register_context_handlers
 from handlers.workflow_handler import register_workflow_handlers
+from handlers.skill_handler import register_skill_handlers
 
 # ── Logging setup ─────────────────────────────────────────────────
 
@@ -156,8 +157,17 @@ class AgentFaxDaemon:
             self.task_manager, self.executor
         )
 
+        # Register skill handlers (skill_install, skill_query, skill_list)
+        register_skill_handlers(self.router, self.executor, self.data_dir)
+
         # Register built-in skills (echo, reverse, word_count)
         register_builtin_skills(self.executor)
+
+        # Load previously installed custom skills
+        custom_dir = os.path.join(self.data_dir, "custom_skills")
+        loaded = self.executor.load_skills_from_dir(custom_dir)
+        if loaded:
+            self.logger.info(f"Loaded {loaded} custom skill(s)")
 
         # Stats
         self._start_time = None
