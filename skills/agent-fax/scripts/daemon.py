@@ -435,15 +435,26 @@ class AgentFaxDaemon:
                         )
                         continue
 
-                    # Project context for this step
+                    # Project context for this step (S4: enforce skill privacy cap)
                     context_items = []
                     if self.context_manager:
                         peer_tier = self.trust_manager.get_trust_tier(
                             target_peer
                         )
-                        context_items = self.context_manager.project_for_task(
-                            skill, peer_tier
-                        )
+                        # Compute skill privacy cap
+                        privacy_tier_map = {"L1_PUBLIC": 1, "L2_TRUSTED": 2, "L3_PRIVATE": 3}
+                        skill_def = self.executor.get_skill(skill) if self.executor.has_skill(skill) else None
+                        max_priv = skill_def.max_context_privacy_tier if skill_def else "L1_PUBLIC"
+                        privacy_cap = privacy_tier_map.get(max_priv, 1)
+                        try:
+                            context_items = self.context_manager.project_for_task(
+                                skill, peer_tier,
+                                max_privacy_tier=privacy_cap,
+                                peer_name=target_peer,
+                            )
+                        except Exception as e:
+                            self.logger.error(f"Context projection failed for workflow step {step_id}: {e}")
+                            context_items = []
 
                     # Send workflow_request
                     task_id = f"wf_{wf_id}_{step_id}_{int(time.time())}"

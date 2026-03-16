@@ -310,10 +310,10 @@ class LLMProjectionEngine:
 
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning(f"Failed to parse LLM response: {e}")
-            # If parse fails, fall back to returning all items
+            # Fail-closed: parse failure → share nothing (not everything)
             return (
-                [item["context_id"] for item in available_items],
-                f"LLM response parse failed ({e}), returning all items",
+                [],
+                f"LLM response parse failed ({e}), fail-closed: no items shared",
                 token_usage,
             )
 

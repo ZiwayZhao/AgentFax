@@ -238,28 +238,38 @@ def register_task_handlers(router, task_manager, executor):
             "estimated_duration": "unknown",
         })
 
-        # Project relevant context for this task (Phase 6)
-        # Enforce min(peer trust, skill privacy cap, session privacy cap).
+        # Project relevant context for this task (S4: session-constrained projection)
+        # Privacy enforcement: min(peer_trust, skill_privacy_cap, session_privacy_cap)
+        # peer_trust_tier controls trust-based filtering inside project_for_task().
+        # max_privacy_tier (skill + session cap) further narrows the ceiling.
         task_context = None
         if ctx.context_manager and ctx.trust_manager:
             privacy_tier_map = {"L1_PUBLIC": 1, "L2_TRUSTED": 2, "L3_PRIVATE": 3}
             peer_tier = ctx.trust_manager.get_trust_tier(sender)
+
+            # Compute privacy cap from skill definition + session agreement
             skill_def = executor.get_skill(skill)
             max_privacy = skill_def.max_context_privacy_tier if skill_def else "L1_PUBLIC"
             privacy_cap = privacy_tier_map.get(max_privacy, 1)
-            # Also apply session privacy cap if present
             if session_privacy_cap:
                 session_cap = privacy_tier_map.get(session_privacy_cap, 1)
                 privacy_cap = min(privacy_cap, session_cap)
-            effective_tier = min(peer_tier, privacy_cap)
 
-            task_context = ctx.context_manager.project_for_task(
-                skill, effective_tier
-            )
+            try:
+                task_context = ctx.context_manager.project_for_task(
+                    skill, peer_tier,
+                    max_privacy_tier=privacy_cap,
+                    peer_name=sender,
+                )
+            except Exception as e:
+                # Fail-closed: projection error → no context shared
+                logger.error(f"Context projection failed for task {task_id}: {e}")
+                task_context = None
+
             if task_context:
                 logger.debug(
                     f"Projected {len(task_context)} context items for task {task_id} "
-                    f"(max_privacy={max_privacy})"
+                    f"(peer_tier={peer_tier}, privacy_cap={privacy_cap})"
                 )
 
         # Execute the skill (pass context as part of input if available)

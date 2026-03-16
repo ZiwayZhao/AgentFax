@@ -111,10 +111,10 @@ class TestLLMResponseParsing:
             "content": "I cannot help with that",
             "usage": {},
         }
-        # Should return all items as fallback
+        # S4: fail-closed — malformed response returns empty (not all items)
         ids, rationale, usage = engine._parse_response(response, SAMPLE_ITEMS)
-        assert len(ids) == len(SAMPLE_ITEMS)
-        assert "parse failed" in rationale
+        assert len(ids) == 0
+        assert "fail-closed" in rationale
 
 
 class TestItemFormatting:

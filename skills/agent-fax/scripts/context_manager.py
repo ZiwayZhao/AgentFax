@@ -263,6 +263,7 @@ class ContextManager:
         max_items: int = 10,
         task_description: str = None,
         peer_name: str = "unknown",
+        max_privacy_tier: int = None,
     ) -> List[dict]:
         """Auto-select context items relevant to a task, filtered by peer's trust.
 
@@ -274,6 +275,17 @@ class ContextManager:
         - peer KNOWN (tier 1) → only L1_PUBLIC items
         - peer INTERNAL (tier 2+) → L1 + L2 items
         - L3_PRIVATE items → NEVER projected, regardless of tier
+        - max_privacy_tier (from session/skill cap) further constrains the ceiling
+
+        Args:
+            task_type: Type of task being executed
+            peer_trust_tier: Peer's trust tier (0-4)
+            max_items: Maximum items to return
+            task_description: Human-readable task description for LLM
+            peer_name: Name of the requesting peer
+            max_privacy_tier: Session/skill privacy cap (1=L1, 2=L2).
+                If set, effective privacy = min(trust-based cap, max_privacy_tier).
+                L3 is never allowed regardless.
         """
         # Clean up expired items first to prevent stale data leakage
         self.cleanup_expired()
@@ -285,6 +297,13 @@ class ContextManager:
             privacy_max = PrivacyTier.L1_PUBLIC
         else:
             return []  # UNTRUSTED gets nothing
+
+        # Apply session/skill privacy cap (can only narrow, never widen)
+        if max_privacy_tier is not None:
+            privacy_max = min(privacy_max, max_privacy_tier)
+            # Sanity: cap must be at least L1, and never L3
+            if privacy_max < PrivacyTier.L1_PUBLIC:
+                return []
 
         # Get ALL eligible items (not filtered by category yet)
         eligible_items = self.query_context(privacy_max=privacy_max)
