@@ -331,8 +331,9 @@ class TestSkillInstallRejected(unittest.TestCase):
         result = self.router.dispatch(msg, self.ctx)
         self.assertEqual(result["type"], "skill_card")
         card = result["payload"]["card"]
-        self.assertEqual(card["name"], "echo")
-        self.assertIn("min_trust_tier", card)
+        self.assertEqual(card["skill_name"], "echo")
+        self.assertIn("trust_requirements", card)
+        self.assertIn("min_trust_tier", card["trust_requirements"])
 
     def test_skill_card_get_missing(self):
         msg = {

@@ -105,8 +105,9 @@ class PeerManager:
         if capabilities:
             peer["capabilities"] = capabilities
             peer["skills"] = [
-                s.get("name") for s in capabilities.get("skills", [])
-                if s.get("name")
+                s.get("skill_name") or s.get("name")
+                for s in capabilities.get("skills", [])
+                if s.get("skill_name") or s.get("name")
             ]
             peer["capabilities_updated"] = datetime.now(timezone.utc).isoformat()
 
@@ -172,6 +173,41 @@ class PeerManager:
         if sender_id in self._peers:
             del self._peers[sender_id]
             self._save()
+
+    def set_skill_cache(self, skill_cache):
+        """Attach a PeerSkillCache for rich skill queries.
+
+        Args:
+            skill_cache: PeerSkillCache instance
+        """
+        self._skill_cache = skill_cache
+
+    def get_skill_cards(self, sender_id: str) -> list:
+        """Get cached Skill Cards for a peer (requires skill_cache)."""
+        cache = getattr(self, "_skill_cache", None)
+        if cache:
+            return cache.get_cards(sender_id)
+        return []
+
+    def find_by_skill_card(self, skill_name: str) -> list:
+        """Find peers that offer a specific skill via Skill Card cache.
+
+        Returns list of dicts with peer_id, card, and peer info.
+        """
+        cache = getattr(self, "_skill_cache", None)
+        if not cache:
+            return self.find_by_skill(skill_name)
+
+        results = []
+        for entry in cache.find_by_skill(skill_name):
+            peer_id = entry["peer_id"]
+            peer_info = self._peers.get(peer_id, {})
+            results.append({
+                **peer_info,
+                "name": peer_id,
+                "card": entry["card"],
+            })
+        return results
 
     def count(self) -> int:
         """Number of known peers."""

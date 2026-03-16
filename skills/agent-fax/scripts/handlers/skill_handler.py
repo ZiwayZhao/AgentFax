@@ -22,14 +22,33 @@ import logging
 logger = logging.getLogger("agentfax.handlers.skill")
 
 
-def register_skill_handlers(router, executor, data_dir: str):
-    """Register skill-related handlers with the router."""
+def register_skill_handlers(router, executor, data_dir: str,
+                            peer_skill_cache=None):
+    """Register skill-related handlers with the router.
+
+    Args:
+        router: MessageRouter instance
+        executor: TaskExecutor instance
+        data_dir: Data directory path
+        peer_skill_cache: Optional PeerSkillCache for caching peer cards
+    """
+
+    # ── Helper: resolve agent identity for Skill Card provider field ──
+
+    def _get_agent_identity(ctx):
+        """Extract agent_id and wallet from context/client."""
+        agent_id = ""
+        wallet = ""
+        if ctx.client:
+            agent_id = getattr(ctx.client, "agent_id", "") or ""
+            wallet = getattr(ctx.client, "wallet_address", "") or ""
+        return agent_id, wallet
 
     # ── Skill Card discovery ─────────────────────────────────
 
     @router.handler("skill_card_query")
     def handle_skill_card_query(msg, ctx):
-        """Return summaries of all available Skill Cards."""
+        """Return full Skill Cards for all available skills."""
         sender = msg.get("sender_id", "unknown")
         payload = msg.get("payload", {})
         tags_filter = payload.get("tags")
@@ -37,12 +56,22 @@ def register_skill_handlers(router, executor, data_dir: str):
 
         logger.info(f"skill_card_query from {sender}")
 
+        agent_id, wallet = _get_agent_identity(ctx)
+        all_cards = executor.list_skill_cards(
+            agent_id=agent_id, wallet=wallet
+        )
+
         cards = []
-        for skill_dict in executor.list_skills():
-            # Apply filters
-            if names_filter and skill_dict["name"] not in names_filter:
+        for card in all_cards:
+            # Filter by names
+            if names_filter and card.get("skill_name") not in names_filter:
                 continue
-            cards.append(skill_dict)
+            # Filter by tags
+            if tags_filter:
+                card_tags = card.get("tags", [])
+                if not any(t in card_tags for t in tags_filter):
+                    continue
+            cards.append(card)
 
         return {
             "type": "skill_card_list",
@@ -54,16 +83,22 @@ def register_skill_handlers(router, executor, data_dir: str):
 
     @router.handler("skill_card_list")
     def handle_skill_card_list(msg, ctx):
-        """Handle a peer's Skill Card list response."""
+        """Handle a peer's Skill Card list response — cache the cards."""
         payload = msg.get("payload", {})
         sender = msg.get("sender_id", "unknown")
         skills = payload.get("skills", [])
         logger.info(
             f"Skill card list from {sender}: {len(skills)} skills — "
-            + ", ".join(s.get("name", "?") for s in skills)
+            + ", ".join(
+                s.get("skill_name") or s.get("name", "?") for s in skills
+            )
         )
 
-        # Update peer capabilities (must pass skill objects, not bare names)
+        # Cache in PeerSkillCache (SQLite)
+        if peer_skill_cache and skills:
+            peer_skill_cache.store_cards(sender, skills)
+
+        # Update peer capabilities (backwards compat with peers.json)
         if ctx.peer_manager:
             ctx.peer_manager.update_capabilities(
                 sender, capabilities={"skills": skills}
@@ -73,7 +108,7 @@ def register_skill_handlers(router, executor, data_dir: str):
 
     @router.handler("skill_card_get")
     def handle_skill_card_get(msg, ctx):
-        """Return full details for a specific Skill Card."""
+        """Return full Skill Card for a specific skill."""
         payload = msg.get("payload", {})
         sender = msg.get("sender_id", "unknown")
         skill_name = payload.get("skill_name")
@@ -92,20 +127,31 @@ def register_skill_handlers(router, executor, data_dir: str):
                 },
             }
 
+        agent_id, wallet = _get_agent_identity(ctx)
+        card = skill_def.to_skill_card(
+            agent_id=agent_id, wallet=wallet
+        )
+
         return {
             "type": "skill_card",
             "payload": {
-                "card": skill_def.to_dict(),
+                "card": card.to_dict(),
             },
         }
 
     @router.handler("skill_card")
     def handle_skill_card(msg, ctx):
-        """Handle a full Skill Card response from a peer."""
+        """Handle a full Skill Card response from a peer — cache it."""
         payload = msg.get("payload", {})
         sender = msg.get("sender_id", "unknown")
         card = payload.get("card", {})
-        logger.info(f"Skill card from {sender}: {card.get('name', '?')}")
+        card_name = card.get("skill_name") or card.get("name", "?")
+        logger.info(f"Skill card from {sender}: {card_name}")
+
+        # Cache the single card
+        if peer_skill_cache and card:
+            peer_skill_cache.store_cards(sender, [card])
+
         return None
 
     # ── Legacy compatibility ─────────────────────────────────

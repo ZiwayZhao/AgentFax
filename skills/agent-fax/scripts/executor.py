@@ -63,6 +63,18 @@ class SkillDefinition:
             "max_context_privacy_tier": self.max_context_privacy_tier,
         }
 
+    def to_skill_card(self, agent_id: str = "", wallet: str = "",
+                      display_name: str = "") -> "SkillCard":
+        """Build a full Skill Card from this definition.
+
+        Requires skill_registry to be importable.
+        """
+        from skill_registry import SkillCard
+        return SkillCard.from_skill_def(
+            self, agent_id=agent_id, wallet=wallet,
+            display_name=display_name,
+        )
+
 
 class TaskExecutor:
     """Registers and executes skills for incoming task requests."""
@@ -200,6 +212,14 @@ class TaskExecutor:
     def get_skill(self, name: str) -> Optional[SkillDefinition]:
         """Get a skill definition by name."""
         return self._skills.get(name)
+
+    def list_skill_cards(self, agent_id: str = "", wallet: str = "",
+                         display_name: str = "") -> List[dict]:
+        """List all registered skills as full Skill Card dicts."""
+        return [
+            s.to_skill_card(agent_id, wallet, display_name).to_dict()
+            for s in self._skills.values()
+        ]
 
     @property
     def stats(self) -> dict:

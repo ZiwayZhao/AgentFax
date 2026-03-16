@@ -55,6 +55,7 @@ from handlers.task_handler import register_task_handlers
 from handlers.context_handler import register_context_handlers
 from handlers.workflow_handler import register_workflow_handlers
 from handlers.skill_handler import register_skill_handlers
+from skill_registry import PeerSkillCache
 
 # ── Logging setup ─────────────────────────────────────────────────
 
@@ -125,6 +126,10 @@ class AgentFaxDaemon:
         except Exception as e:
             self.logger.info(f"LLM projection not loaded: {e}")
 
+        # Skill Card cache (peer cards)
+        self.peer_skill_cache = PeerSkillCache(self.data_dir)
+        self.peer_manager.set_skill_cache(self.peer_skill_cache)
+
         # Phase 7: Workflow Orchestration
         self.workflow_manager = WorkflowManager(self.data_dir)
 
@@ -157,8 +162,11 @@ class AgentFaxDaemon:
             self.task_manager, self.executor
         )
 
-        # Register skill handlers (skill_install, skill_query, skill_list)
-        register_skill_handlers(self.router, self.executor, self.data_dir)
+        # Register skill handlers (skill_card_query/list/get/card + legacy)
+        register_skill_handlers(
+            self.router, self.executor, self.data_dir,
+            peer_skill_cache=self.peer_skill_cache,
+        )
 
         # Register built-in skills (echo, reverse, word_count)
         register_builtin_skills(self.executor)
@@ -225,23 +233,24 @@ class AgentFaxDaemon:
         self.logger.info(f"  Handlers: {', '.join(self.router.registered_types)}")
         self.logger.info("=" * 60)
 
-        # Verify bridge is accessible
-        try:
-            health = self.client.health()
-            self.logger.info(
-                f"Bridge connected: {health.get('address', '?')}"
-            )
-        except Exception as e:
-            self.logger.error(f"Bridge not accessible: {e}")
-            self.logger.error("Is the XMTP bridge running?")
-            return
-
-        # Write PID file
         pid_file = os.path.join(self.data_dir, "daemon.pid")
-        with open(pid_file, "w") as f:
-            f.write(str(os.getpid()))
 
         try:
+            # Verify bridge is accessible
+            try:
+                health = self.client.health()
+                self.logger.info(
+                    f"Bridge connected: {health.get('address', '?')}"
+                )
+            except Exception as e:
+                self.logger.error(f"Bridge not accessible: {e}")
+                self.logger.error("Is the XMTP bridge running?")
+                return
+
+            # Write PID file
+            with open(pid_file, "w") as f:
+                f.write(str(os.getpid()))
+
             while self.running:
                 try:
                     self._cycle()
@@ -254,11 +263,12 @@ class AgentFaxDaemon:
                 time.sleep(self.poll_interval)
 
         finally:
-            # Cleanup
+            # Cleanup — always runs, even on early return
             if os.path.exists(pid_file):
                 os.remove(pid_file)
             self.inbox_store.close()
             self.outbox_store.close()
+            self.peer_skill_cache.close()
             self.reputation_manager.close()
             self.context_manager.close()
             self.workflow_manager.close()
