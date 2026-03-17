@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { fetchStats, fetchActivity, fetchPeers } from '../../lib/api/client'
+import { fetchStats, fetchActivity, fetchPeers, fetchSessions, fetchTasks } from '../../lib/api/client'
 import { PageHeader } from '../../components/PageHeader'
 import { StatCard } from '../../components/StatCard'
-import { StatusDot } from '../../components/StatusDot'
-import { TrustBadge } from '../../components/TrustBadge'
 import { EmptyState } from '../../components/EmptyState'
+import { AttentionQueue } from './AttentionQueue'
+import { AgentTeamStatus } from './AgentTeamStatus'
 
 export function OverviewPage() {
   const { data: stats, isLoading: statsLoading } = useQuery({
@@ -22,6 +22,16 @@ export function OverviewPage() {
     queryFn: fetchPeers,
   })
 
+  const { data: sessions } = useQuery({
+    queryKey: ['sessions-proposed'],
+    queryFn: () => fetchSessions({ state: 'proposed' }),
+  })
+
+  const { data: failedTaskList } = useQuery({
+    queryKey: ['tasks-failed'],
+    queryFn: () => fetchTasks({ state: 'failed', limit: 10 }),
+  })
+
   if (statsLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -33,7 +43,7 @@ export function OverviewPage() {
   const onlinePeers = peers?.filter(p => p.is_online) || []
   const taskStates = stats?.task_states || {}
   const completedTasks = taskStates['completed'] || 0
-  const failedTasks = taskStates['failed'] || 0
+  const failedCount = taskStates['failed'] || 0
   const inProgress = taskStates['in_progress'] || 0
 
   return (
@@ -41,6 +51,12 @@ export function OverviewPage() {
       <PageHeader
         title="Overview"
         description="Agent collaboration status at a glance"
+      />
+
+      {/* Attention Queue */}
+      <AttentionQueue
+        pendingSessions={sessions || []}
+        failedTasks={failedTaskList || []}
       />
 
       {/* KPI Strip */}
@@ -63,8 +79,8 @@ export function OverviewPage() {
         />
         <StatCard
           label="Tasks Failed"
-          value={failedTasks}
-          color={failedTasks > 0 ? 'var(--accent-red)' : undefined}
+          value={failedCount}
+          color={failedCount > 0 ? 'var(--accent-red)' : undefined}
         />
         <StatCard
           label="Inbox"
@@ -77,37 +93,8 @@ export function OverviewPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Peers */}
-        <div
-          className="rounded-lg p-4"
-          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
-        >
-          <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-secondary)' }}>
-            Network
-          </h2>
-          {peers && peers.length > 0 ? (
-            <div className="space-y-2">
-              {peers.slice(0, 8).map(peer => (
-                <div key={peer.name} className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <StatusDot status={peer.is_online ? 'online' : 'offline'} />
-                    <span>{peer.name}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <TrustBadge tier={peer.trust_tier} />
-                    {peer.latency_ms != null && (
-                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                        {peer.latency_ms.toFixed(0)}ms
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <EmptyState title="No peers" description="No agents discovered yet" />
-          )}
-        </div>
+        {/* Agent Network */}
+        <AgentTeamStatus peers={peers || []} />
 
         {/* Message Types */}
         <div

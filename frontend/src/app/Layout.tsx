@@ -3,14 +3,14 @@ import { StatusDot } from '../components/StatusDot'
 
 const NAV_ITEMS = [
   { to: '/', label: 'Overview' },
-  // F2+ routes:
-  // { to: '/activity', label: 'Activity' },
+  { to: '/activity', label: 'Activity' },
+  // F3+ routes:
   // { to: '/peers', label: 'Peers' },
   // { to: '/skills', label: 'Skills' },
   // { to: '/sessions', label: 'Sessions' },
   // { to: '/workflows', label: 'Workflows' },
   // { to: '/metering', label: 'Metering' },
-  // { to: '/settings', label: 'Settings' },
+  { to: '/settings', label: 'Settings' },
 ]
 
 export function Layout() {

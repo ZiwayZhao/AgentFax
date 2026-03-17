@@ -198,13 +198,10 @@ class DashboardAPIv2:
             return {"error": str(e)}
 
     def set_peer_trust(self, peer_id: str, tier: int) -> dict:
-        try:
-            from security import TrustManager
-            tm = TrustManager(self.data_dir)
-            tm.set_trust_override(peer_id, tier)
-            return {"ok": True, "peer_id": peer_id, "trust_tier": tier}
-        except Exception as e:
-            return {"error": str(e)}
+        from security import TrustManager
+        tm = TrustManager(self.data_dir)
+        tm.set_trust_override(peer_id, tier)
+        return {"ok": True, "peer_id": peer_id, "trust_tier": tier}
 
     # ── Sessions ──────────────────────────────────────────────
 
@@ -340,3 +337,48 @@ class DashboardAPIv2:
 
         events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
         return events[:limit]
+
+    # ── Context Policy (F2) ──────────────────────────────────
+
+    def get_context_policy(self) -> dict:
+        """Read current autonomy level and category privacy policies."""
+        policy = self._load_json("context_policy.json")
+        return {
+            "autonomy_level": policy.get("autonomy_level", 1),
+            "category_policies": policy.get("category_policies", {
+                "general": "L2_TRUSTED",
+                "project": "L2_TRUSTED",
+                "credentials": "L3_PRIVATE",
+                "personal": "L3_PRIVATE",
+                "system": "L1_PUBLIC",
+            }),
+        }
+
+    _VALID_CATEGORIES = {"general", "project", "credentials", "personal", "system"}
+    _VALID_TIERS = {"L1_PUBLIC", "L2_TRUSTED", "L3_PRIVATE"}
+
+    def update_context_policy(self, update: dict) -> dict:
+        """Merge update into context_policy.json and persist.
+
+        Raises ValueError for invalid input (caller should map to 400).
+        """
+        policy_path = os.path.join(self.data_dir, "context_policy.json")
+        current = self.get_context_policy()
+
+        if "autonomy_level" in update:
+            level = int(update["autonomy_level"])
+            if level not in (0, 1, 2):
+                raise ValueError("autonomy_level must be 0, 1, or 2")
+            current["autonomy_level"] = level
+
+        if "category_policies" in update:
+            for cat, tier in update["category_policies"].items():
+                if cat not in self._VALID_CATEGORIES:
+                    raise ValueError(f"Unknown category: {cat}")
+                if tier not in self._VALID_TIERS:
+                    raise ValueError(f"Invalid privacy tier: {tier}")
+                current["category_policies"][cat] = tier
+
+        with open(policy_path, "w") as f:
+            json.dump(current, f, indent=2)
+        return {"ok": True, **current}

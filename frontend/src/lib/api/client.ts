@@ -110,4 +110,24 @@ export function postSessionAction(sessionId: string, action: 'accept' | 'reject'
   });
 }
 
+// ── Context Policy (F2) ──────────────────────────────────
+
+export interface ContextPolicy {
+  autonomy_level: 0 | 1 | 2;
+  category_policies: Record<string, string>;
+}
+
+export type ContextPolicyUpdate = Partial<Pick<ContextPolicy, 'autonomy_level' | 'category_policies'>>;
+
+export function fetchContextPolicy() {
+  return request<ContextPolicy>('/api/settings/context-policy');
+}
+
+export function patchContextPolicy(update: ContextPolicyUpdate) {
+  return request<{ ok: boolean }>('/api/settings/context-policy', {
+    method: 'PATCH',
+    body: JSON.stringify(update),
+  });
+}
+
 export { ApiError };

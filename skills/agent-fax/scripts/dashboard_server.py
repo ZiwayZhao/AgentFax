@@ -81,7 +81,7 @@ class DashboardV2Handler(BaseHTTPRequestHandler):
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            return {}
+            raise ValueError("Invalid JSON body")
 
     def _param(self, params, key, default=None):
         values = params.get(key, [])
@@ -188,6 +188,9 @@ class DashboardV2Handler(BaseHTTPRequestHandler):
                     state=self._param(params, "state"),
                 ))
 
+            elif path == "/api/settings/context-policy":
+                self._send_json(self.api.get_context_policy())
+
             elif path.startswith("/api/metering/receipts"):
                 self._send_json(self.api.get_metering_receipts(
                     limit=int(self._param(params, "limit", "50")),
@@ -242,8 +245,15 @@ class DashboardV2Handler(BaseHTTPRequestHandler):
                 body = self._read_body()
                 tier = body.get("trust_tier", 0)
                 self._send_json(self.api.set_peer_trust(m["peer_id"], int(tier)))
+
+            elif path == "/api/settings/context-policy":
+                body = self._read_body()
+                self._send_json(self.api.update_context_policy(body))
+
             else:
                 self._send_json({"error": "not found"}, status=404)
+        except ValueError as e:
+            self._send_json({"error": str(e)}, status=400)
         except Exception as e:
             self._send_json({"error": str(e)}, status=500)
 
