@@ -118,6 +118,19 @@ def register_session_handlers(router, session_manager, executor):
             agreed_schema_hash=",".join(schema_hashes),
         )
 
+        # S5: Slack notification — session proposed & auto-accepted
+        if ctx.slack_notifier:
+            try:
+                ctx.slack_notifier.notify_session_proposed(
+                    peer_id=sender, skills=proposed_skills,
+                    trust_tier=proposed_trust_tier, session_id=session_id,
+                )
+                session_data = session_manager.get_session(session_id)
+                if session_data:
+                    ctx.slack_notifier.notify_session_accepted(session_data)
+            except Exception as e:
+                logger.debug(f"Slack notify failed (session_propose): {e}")
+
         return {
             "type": "session_accept",
             "payload": {
@@ -187,6 +200,16 @@ def register_session_handlers(router, session_manager, executor):
         )
 
         logger.info(f"Session {local_session_id} now ACTIVE with {sender}")
+
+        # S5: Slack notification — our proposal was accepted by peer
+        if ctx.slack_notifier:
+            try:
+                session_data = session_manager.get_session(local_session_id)
+                if session_data:
+                    ctx.slack_notifier.notify_session_accepted(session_data)
+            except Exception as e:
+                logger.debug(f"Slack notify failed (session_accept): {e}")
+
         return None
 
     # ── session_reject ───────────────────────────────────────
@@ -214,6 +237,16 @@ def register_session_handlers(router, session_manager, executor):
                 )
                 return None
             session_manager.reject_session(local_session_id, reason)
+
+            # S5: Slack notification
+            if ctx.slack_notifier:
+                try:
+                    ctx.slack_notifier.notify_session_rejected(
+                        peer_id=sender, reason=reason,
+                        session_id=local_session_id,
+                    )
+                except Exception as e:
+                    logger.debug(f"Slack notify failed (session_reject): {e}")
 
         return None
 
@@ -273,6 +306,15 @@ def register_session_handlers(router, session_manager, executor):
 
         # Try to auto-complete if no tasks in flight
         session_manager.complete_session(session_id)
+
+        # S5: Slack notification
+        if ctx.slack_notifier:
+            try:
+                session_data = session_manager.get_session(session_id)
+                if session_data:
+                    ctx.slack_notifier.notify_session_closed(session_data)
+            except Exception as e:
+                logger.debug(f"Slack notify failed (session_close): {e}")
 
         final = session_manager.get_session(session_id)
         return {

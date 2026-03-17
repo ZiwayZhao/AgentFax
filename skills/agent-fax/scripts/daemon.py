@@ -59,6 +59,7 @@ from handlers.session_handler import register_session_handlers
 from skill_registry import PeerSkillCache
 from session import SessionManager
 from metering import MeteringManager
+from slack_notifier import SlackNotifier
 
 # ── Logging setup ─────────────────────────────────────────────────
 
@@ -142,6 +143,9 @@ class AgentFaxDaemon:
         # S3: Metering Manager
         self.metering_manager = MeteringManager(self.data_dir)
 
+        # S5: Slack Notifier (optional — enabled if slack_config.json exists)
+        self.slack_notifier = SlackNotifier(self.data_dir)
+
         # Router context
         self.ctx = RouterContext(
             client=self.client,
@@ -154,6 +158,7 @@ class AgentFaxDaemon:
             workflow_manager=self.workflow_manager,
             session_manager=self.session_manager,
             metering_manager=self.metering_manager,
+            slack_notifier=self.slack_notifier,
         )
 
         # Register built-in handlers (ping/pong/discover/ack)
@@ -299,6 +304,7 @@ class AgentFaxDaemon:
             self.reputation_manager.close()
             self.context_manager.close()
             self.workflow_manager.close()
+            self.slack_notifier.close()
             self.logger.info("Daemon stopped.")
 
     def _cycle(self):
@@ -320,6 +326,16 @@ class AgentFaxDaemon:
                     f"Trust tier change: {c['peer_id']} "
                     f"{c['old']} → {c['new']}"
                 )
+                # S5: Slack notification for trust changes
+                if self.slack_notifier:
+                    try:
+                        self.slack_notifier.notify_trust_change(
+                            peer_id=c["peer_id"],
+                            old_tier=c["old"],
+                            new_tier=c["new"],
+                        )
+                    except Exception as e:
+                        self.logger.debug(f"Slack notify failed (trust_change): {e}")
 
             # Cleanup expired context items
             self.context_manager.cleanup_expired()

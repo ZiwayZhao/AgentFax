@@ -238,6 +238,15 @@ def register_task_handlers(router, task_manager, executor):
             "estimated_duration": "unknown",
         })
 
+        # S5: Slack notification
+        if ctx.slack_notifier:
+            try:
+                ctx.slack_notifier.notify_task_accepted(
+                    task_id=task_id, skill=skill, sender=sender,
+                )
+            except Exception as e:
+                logger.debug(f"Slack notify failed (task_accepted): {e}")
+
         # Project relevant context for this task (S4: session-constrained projection)
         # Privacy enforcement: min(peer_trust, skill_privacy_cap, session_privacy_cap)
         # peer_trust_tier controls trust-based filtering inside project_for_task().
@@ -302,6 +311,16 @@ def register_task_handlers(router, task_manager, executor):
             if session_id and ctx.session_manager:
                 ctx.session_manager.task_completed(session_id)
 
+            # S5: Slack notification
+            if ctx.slack_notifier:
+                try:
+                    ctx.slack_notifier.notify_task_completed(
+                        task_id=task_id, skill=skill, sender=sender,
+                        duration_ms=duration,
+                    )
+                except Exception as e:
+                    logger.debug(f"Slack notify failed (task_completed): {e}")
+
             # S3: Create usage receipt (with compensation on failure)
             output_size = len(json.dumps(result_data or {}).encode())
             receipt_id = None
@@ -358,6 +377,17 @@ def register_task_handlers(router, task_manager, executor):
                 )
             if session_id and ctx.session_manager:
                 ctx.session_manager.task_failed(session_id)
+
+            # S5: Slack notification
+            if ctx.slack_notifier:
+                try:
+                    ctx.slack_notifier.notify_task_failed(
+                        task_id=task_id, skill=skill, sender=sender,
+                        error_code="EXECUTION_FAILED",
+                        error_message=error_msg,
+                    )
+                except Exception as e:
+                    logger.debug(f"Slack notify failed (task_failed): {e}")
 
             # S3: Create usage receipt for failed task too
             if ctx.metering_manager:
