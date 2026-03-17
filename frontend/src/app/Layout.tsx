@@ -4,9 +4,9 @@ import { StatusDot } from '../components/StatusDot'
 const NAV_ITEMS = [
   { to: '/', label: 'Overview' },
   { to: '/activity', label: 'Activity' },
-  // F3+ routes:
-  // { to: '/peers', label: 'Peers' },
-  // { to: '/skills', label: 'Skills' },
+  { to: '/peers', label: 'Peers' },
+  { to: '/skills', label: 'Skills' },
+  // F4+ routes:
   // { to: '/sessions', label: 'Sessions' },
   // { to: '/workflows', label: 'Workflows' },
   // { to: '/metering', label: 'Metering' },

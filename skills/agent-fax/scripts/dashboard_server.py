@@ -197,8 +197,14 @@ class DashboardV2Handler(BaseHTTPRequestHandler):
                 ))
 
             # Parameterized API routes
+            elif (m := self._match_path(path, "/api/peers/:peer_id/detail")) is not None:
+                self._send_json(self.api.get_peer_detail(m["peer_id"]))
+
             elif (m := self._match_path(path, "/api/peers/:peer_id/reputation")) is not None:
                 self._send_json(self.api.get_peer_reputation(m["peer_id"]))
+
+            elif (m := self._match_path(path, "/api/skill-cards/:peer_id")) is not None:
+                self._send_json(self.api.get_skill_cards(peer_id=m["peer_id"]))
 
             elif (m := self._match_path(path, "/api/sessions/:id")) is not None:
                 self._send_json(self.api.get_session(m["id"]))

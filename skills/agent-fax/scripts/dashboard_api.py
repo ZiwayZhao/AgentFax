@@ -228,16 +228,70 @@ class DashboardAPIv2:
 
     # ── Skill Cards ───────────────────────────────────────────
 
-    def get_skill_cards(self) -> list:
+    def get_skill_cards(self, peer_id: str = None) -> list:
         try:
             from skill_registry import PeerSkillCache
             cache = PeerSkillCache(self.data_dir)
-            cards = cache.list_all_cards()
+            if peer_id:
+                cards = cache.get_cards(peer_id)
+            else:
+                # Aggregate all cards from all known peers
+                all_cards = []
+                for pid in cache.list_all_peers():
+                    for card in cache.get_cards(pid):
+                        card["_peer_id"] = pid
+                        all_cards.append(card)
+                cards = all_cards
             cache.close()
             return cards
         except Exception as e:
             logger.error(f"get_skill_cards error: {e}")
             return []
+
+    def get_peer_detail(self, peer_id: str) -> dict:
+        """Get full peer detail including trust, reputation, and skills."""
+        from peers import PeerManager
+        peers = PeerManager(self.data_dir)
+        all_peers = peers.list_all()
+        online_peers = peers.get_online()
+        online_names = {p["name"] for p in online_peers}
+
+        data = all_peers.get(peer_id, {})
+        if not data:
+            return {"error": "peer not found"}
+
+        result = {
+            "name": peer_id,
+            "wallet": data.get("wallet", ""),
+            "last_seen": data.get("last_seen", ""),
+            "is_online": peer_id in online_names,
+            "latency_ms": data.get("avg_latency_ms", data.get("latency_ms")),
+            "skills": data.get("skills", []),
+        }
+
+        try:
+            from security import TrustManager
+            tm = TrustManager(self.data_dir)
+            result["trust_tier"] = tm.get_trust_tier(peer_id)
+        except Exception:
+            result["trust_tier"] = 0
+
+        try:
+            from reputation import ReputationManager
+            rm = ReputationManager(self.data_dir)
+            result["reputation"] = rm.get_reputation(peer_id)
+        except Exception:
+            result["reputation"] = {}
+
+        try:
+            from skill_registry import PeerSkillCache
+            cache = PeerSkillCache(self.data_dir)
+            result["skill_cards"] = cache.get_cards(peer_id)
+            cache.close()
+        except Exception:
+            result["skill_cards"] = []
+
+        return result
 
     # ── Workflows ─────────────────────────────────────────────
 

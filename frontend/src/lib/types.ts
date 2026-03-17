@@ -64,6 +64,23 @@ export interface ReputationSummary {
   current_tier: TrustTier;
 }
 
+export interface PeerDetail extends Peer {
+  reputation: Partial<ReputationSummary>;
+  skill_cards: SkillCardBasic[];
+  error?: string;
+}
+
+export interface SkillCardBasic {
+  skill_name: string;
+  skill_version?: string;
+  description?: string;
+  min_trust_tier?: number;
+  max_context_privacy_tier?: string;
+  tags?: string[];
+  _peer_id?: string;
+  provider?: { agent_id: string; wallet: string; display_name: string };
+}
+
 // ── Tasks ────────────────────────────────────────────────
 
 export interface Task {

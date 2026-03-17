@@ -85,7 +85,13 @@ export function fetchWorkflows(params?: { state?: string }) {
 }
 
 export function fetchSkillCards() {
-  return request<import('../types').SkillCard[]>('/api/skill-cards');
+  return request<import('../types').SkillCardBasic[]>('/api/skill-cards');
+}
+
+// ── Peer Detail (F3) ──────────────────────────────────────
+
+export function fetchPeerDetail(peerId: string) {
+  return request<import('../types').PeerDetail>(`/api/peers/${peerId}/detail`);
 }
 
 export function fetchMeteringReceipts(params?: { limit?: number }) {
