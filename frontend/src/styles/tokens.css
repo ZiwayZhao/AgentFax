@@ -1,0 +1,44 @@
+/* AgentFax Design Tokens — GitHub dark theme */
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent-blue: #58a6ff;
+  --accent-green: #3fb950;
+  --accent-yellow: #d29922;
+  --accent-red: #f85149;
+  --accent-purple: #bc8cff;
+  --accent-orange: #d18616;
+
+  /* Trust tiers */
+  --trust-untrusted: #8b949e;
+  --trust-known: #58a6ff;
+  --trust-internal: #3fb950;
+  --trust-privileged: #d29922;
+  --trust-system: #bc8cff;
+
+  /* Privacy tiers */
+  --privacy-public: #3fb950;
+  --privacy-trusted: #d29922;
+  --privacy-private: #f85149;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 12px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
