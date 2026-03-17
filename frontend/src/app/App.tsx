@@ -4,6 +4,9 @@ import { OverviewPage } from '../features/overview/OverviewPage'
 import { ActivityPage } from '../features/activity/ActivityPage'
 import { PeersPage } from '../features/peers/PeersPage'
 import { SkillBrowserPage } from '../features/skills/SkillBrowserPage'
+import { SessionsPage } from '../features/sessions/SessionsPage'
+import { WorkflowsPage } from '../features/workflows/WorkflowsPage'
+import { MeteringPage } from '../features/metering/MeteringPage'
 import { SettingsPage } from '../features/settings/SettingsPage'
 
 export function App() {
@@ -14,8 +17,10 @@ export function App() {
         <Route path="/activity" element={<ActivityPage />} />
         <Route path="/peers" element={<PeersPage />} />
         <Route path="/skills" element={<SkillBrowserPage />} />
+        <Route path="/sessions" element={<SessionsPage />} />
+        <Route path="/workflows" element={<WorkflowsPage />} />
+        <Route path="/metering" element={<MeteringPage />} />
         <Route path="/settings" element={<SettingsPage />} />
-        {/* F4+ routes will be added here */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

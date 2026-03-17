@@ -6,10 +6,9 @@ const NAV_ITEMS = [
   { to: '/activity', label: 'Activity' },
   { to: '/peers', label: 'Peers' },
   { to: '/skills', label: 'Skills' },
-  // F4+ routes:
-  // { to: '/sessions', label: 'Sessions' },
-  // { to: '/workflows', label: 'Workflows' },
-  // { to: '/metering', label: 'Metering' },
+  { to: '/sessions', label: 'Sessions' },
+  { to: '/workflows', label: 'Workflows' },
+  { to: '/metering', label: 'Metering' },
   { to: '/settings', label: 'Settings' },
 ]
 
